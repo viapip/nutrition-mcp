@@ -222,6 +222,17 @@ export async function getMealsInRange(
     return (data as Meal[]) ?? [];
 }
 
+export async function getAllMeals(userId: string): Promise<Meal[]> {
+    const { data, error } = await getSupabase()
+        .from("meals")
+        .select("*")
+        .eq("user_id", userId)
+        .order("logged_at", { ascending: true });
+
+    if (error) throw new Error(`Failed to get meals: ${error.message}`);
+    return (data as Meal[]) ?? [];
+}
+
 export async function deleteMeal(userId: string, id: string): Promise<void> {
     const { error } = await getSupabase()
         .from("meals")
@@ -533,6 +544,14 @@ export async function deleteAllUserData(userId: string): Promise<void> {
         .eq("user_id", userId);
     if (profileErr)
         throw new Error(`Failed to delete profile: ${profileErr.message}`);
+
+    // Remove any meal-export file from the "exports" storage bucket. Missing
+    // paths are not an error, so this is a no-op for users who never exported.
+    const { error: exportErr } = await sb.storage
+        .from("exports")
+        .remove([`${userId}/meals.csv`]);
+    if (exportErr)
+        throw new Error(`Failed to delete exports: ${exportErr.message}`);
 
     const { error: mealsErr } = await sb
         .from("meals")
