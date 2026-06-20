@@ -29,6 +29,30 @@ export function dateInTz(instant: Date | string, tz: string): string {
     }).format(d);
 }
 
+/**
+ * Local wall-clock timestamp ("YYYY-MM-DD HH:mm:ss") of an absolute instant in
+ * the given IANA timezone. With tz="UTC" this yields the raw UTC time.
+ */
+export function formatLocalDateTime(
+    instant: Date | string,
+    tz: string,
+): string {
+    const d = instant instanceof Date ? instant : new Date(instant);
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+    }).formatToParts(d);
+    const get = (t: string) => parts.find((p) => p.type === t)!.value;
+    const hour = get("hour") === "24" ? "00" : get("hour");
+    return `${get("year")}-${get("month")}-${get("day")} ${hour}:${get("minute")}:${get("second")}`;
+}
+
 /** Local hour (0-23) of an absolute instant in the given IANA timezone. */
 export function hourInTz(instant: Date | string, tz: string): number {
     const d = instant instanceof Date ? instant : new Date(instant);
