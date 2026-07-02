@@ -132,6 +132,30 @@ export function zonedNextDayStartUtc(date: string, tz: string): Date {
     return zonedDayStartUtc(nextStr, tz);
 }
 
+/**
+ * Validate a client-supplied `logged_at` ISO string: it must parse, and must
+ * not be in the future beyond a small clock-skew tolerance. Prevents a
+ * mis-dated entry from silently becoming the user's "latest" reading. `nowMs`
+ * is injected for testability.
+ */
+export function validateLoggedAt(
+    iso: string,
+    nowMs: number,
+    toleranceMs: number = 5 * 60 * 1000,
+): void {
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) {
+        throw new Error(
+            `Invalid logged_at timestamp: ${iso}. Use an ISO 8601 string.`,
+        );
+    }
+    if (t > nowMs + toleranceMs) {
+        throw new Error(
+            `logged_at is in the future (${iso}). Log the time the measurement was actually taken.`,
+        );
+    }
+}
+
 /** Shift a local YYYY-MM-DD date by N days, returning YYYY-MM-DD. No TZ needed. */
 export function shiftLocalDate(date: string, days: number): string {
     const [y, m, d] = date.split("-").map(Number);
