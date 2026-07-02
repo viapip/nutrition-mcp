@@ -8,6 +8,7 @@ import {
     zonedDayStartUtc,
     zonedNextDayStartUtc,
     shiftLocalDate,
+    validateLoggedAt,
 } from "./tz.js";
 
 test("dateInTz maps an instant to the local calendar day", () => {
@@ -63,6 +64,24 @@ test("zonedNextDayStartUtc is the exclusive upper bound", () => {
 test("shiftLocalDate does calendar arithmetic across month boundaries", () => {
     expect(shiftLocalDate("2024-02-28", 1)).toBe("2024-02-29"); // leap year
     expect(shiftLocalDate("2024-03-01", -1)).toBe("2024-02-29");
+});
+
+test("validateLoggedAt accepts past/now and rejects future & invalid", () => {
+    const now = Date.parse("2026-07-02T12:00:00Z");
+    // past and present are fine
+    expect(() => validateLoggedAt("2026-07-01T12:00:00Z", now)).not.toThrow();
+    expect(() => validateLoggedAt("2026-07-02T12:00:00Z", now)).not.toThrow();
+    // within the 5-minute skew tolerance
+    expect(() => validateLoggedAt("2026-07-02T12:04:00Z", now)).not.toThrow();
+    // beyond tolerance -> future
+    expect(() => validateLoggedAt("2026-07-02T12:30:00Z", now)).toThrow(
+        /future/,
+    );
+    expect(() => validateLoggedAt("2027-01-01T00:00:00Z", now)).toThrow(
+        /future/,
+    );
+    // unparseable
+    expect(() => validateLoggedAt("not-a-date", now)).toThrow(/Invalid/);
 });
 
 test("validateTz accepts IANA names and rejects junk", () => {
