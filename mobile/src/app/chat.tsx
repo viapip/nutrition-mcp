@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
@@ -26,6 +27,7 @@ import {
     type Theme,
 } from "@/constants/theme";
 import { sendChat, type ChatMessage, type ChatPart } from "@/lib/api";
+import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const SUGGESTIONS = [
     "I had a bowl of oatmeal with berries",
@@ -94,6 +96,36 @@ function notify(title: string, message: string) {
     else Alert.alert(title, message);
 }
 
+const CHAT_KEY = "nutrition_chat";
+
+/** Photos are megabytes of base64 — persist text stubs, cap the length. */
+function storable(messages: ChatMessage[]): ChatMessage[] {
+    return messages.slice(-60).map((m) => {
+        if (typeof m.content === "string") return m;
+        const text = messageText(m);
+        return {
+            role: m.role,
+            content: messageImage(m) ? `[photo of food] ${text}`.trim() : text,
+        };
+    });
+}
+
+/** What the typing bubble says while the assistant runs a tool. */
+const TOOL_STATUS: Record<string, string> = {
+    log_meal: "Logging the meal…",
+    log_water: "Logging water…",
+    log_weight: "Logging weight…",
+    get_dashboard: "Checking your day…",
+    get_day: "Looking back…",
+    update_meal: "Fixing the entry…",
+    delete_meal: "Removing it…",
+    delete_water: "Removing it…",
+    update_weight: "Fixing the entry…",
+    delete_weight: "Removing it…",
+    set_goals: "Updating goals…",
+    lookup_barcode: "Reading the barcode…",
+};
+
 function TypingDots({ theme }: { theme: Theme }) {
     // useState, not useRef: reading a ref during render trips react-hooks/refs
     const [pulse] = useState(() => new Animated.Value(0));
@@ -142,10 +174,33 @@ export default function ChatScreen() {
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
 
     const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [hydrated, setHydrated] = useState(false);
     const [input, setInput] = useState("");
     const [pendingImage, setPendingImage] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [status, setStatus] = useState<string | null>(null);
     const scrollRef = useRef<ScrollView>(null);
+    const abortRef = useRef<AbortController | null>(null);
+
+    // Restore the conversation, then mirror every change back to storage.
+    useEffect(() => {
+        AsyncStorage.getItem(CHAT_KEY)
+            .then((raw) => {
+                if (raw) setMessages(JSON.parse(raw) as ChatMessage[]);
+            })
+            .catch(() => {})
+            .finally(() => setHydrated(true));
+    }, []);
+    useEffect(() => {
+        if (!hydrated) return;
+        void AsyncStorage.setItem(CHAT_KEY, JSON.stringify(storable(messages)));
+    }, [messages, hydrated]);
+
+    const clearChat = () => {
+        abortRef.current?.abort();
+        setMessages([]);
+        void AsyncStorage.removeItem(CHAT_KEY);
+    };
 
     const acceptImage = (base64: string | null | undefined) => {
         if (!base64) return;
@@ -211,32 +266,48 @@ export default function ChatScreen() {
               ] as ChatPart[])
             : text;
         const next = [...messages, { role: "user" as const, content }];
+        tapBuzz();
         setMessages(next);
         setInput("");
         setPendingImage(null);
         setBusy(true);
+        const ctrl = new AbortController();
+        abortRef.current = ctrl;
         try {
-            const reply = await sendChat(slimHistory(next));
+            const reply = await sendChat(
+                slimHistory(next),
+                (name) => setStatus(TOOL_STATUS[name] ?? "Working…"),
+                ctrl.signal,
+            );
+            successBuzz();
             setMessages([...next, { role: "assistant", content: reply }]);
-        } catch {
-            setMessages([
-                ...next,
-                {
-                    role: "assistant",
-                    content: "That didn't go through — try again.",
-                },
-            ]);
+        } catch (err) {
+            // Cancelled by the user — keep their message, add nothing.
+            if (!ctrl.signal.aborted) {
+                setMessages([
+                    ...next,
+                    {
+                        role: "assistant",
+                        content:
+                            err instanceof Error &&
+                            err.message === "unauthorized"
+                                ? "Session expired — log in again."
+                                : "That didn't go through — try again.",
+                    },
+                ]);
+            }
         } finally {
+            abortRef.current = null;
             setBusy(false);
+            setStatus(null);
         }
     };
 
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
-            <KeyboardAvoidingView
-                style={styles.flex}
-                behavior={Platform.OS === "ios" ? "padding" : undefined}
-            >
+            {/* edge-to-edge Android (SDK 57) no longer resizes on its own,
+                so padding is needed on both platforms */}
+            <KeyboardAvoidingView style={styles.flex} behavior="padding">
                 <View style={styles.wrap}>
                     {/* Header */}
                     <View style={styles.header}>
@@ -257,8 +328,28 @@ export default function ChatScreen() {
                         >
                             Assistant
                         </Text>
-                        {/* spacer to balance the back button */}
-                        <View style={styles.headerSpacer} />
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Clear conversation"
+                            onPress={clearChat}
+                            hitSlop={12}
+                            disabled={messages.length === 0}
+                            style={styles.headerSpacer}
+                        >
+                            <Text
+                                style={[
+                                    styles.clear,
+                                    {
+                                        color:
+                                            messages.length === 0
+                                                ? "transparent"
+                                                : theme.inkMuted,
+                                    },
+                                ]}
+                            >
+                                Clear
+                            </Text>
+                        </Pressable>
                     </View>
 
                     <ScrollView
@@ -391,7 +482,19 @@ export default function ChatScreen() {
                                     },
                                 ]}
                             >
-                                <TypingDots theme={theme} />
+                                <View style={styles.statusRow}>
+                                    <TypingDots theme={theme} />
+                                    {status && (
+                                        <Text
+                                            style={[
+                                                styles.statusText,
+                                                { color: theme.inkSecondary },
+                                            ]}
+                                        >
+                                            {status}
+                                        </Text>
+                                    )}
+                                </View>
                             </View>
                         )}
                     </ScrollView>
@@ -473,17 +576,24 @@ export default function ChatScreen() {
                         />
                         <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel="Send"
-                            onPress={() => void send()}
-                            disabled={busy || (!input.trim() && !pendingImage)}
+                            accessibilityLabel={
+                                busy ? "Stop generating" : "Send"
+                            }
+                            onPress={() =>
+                                busy ? abortRef.current?.abort() : void send()
+                            }
+                            disabled={!busy && !input.trim() && !pendingImage}
                             style={({ pressed }) => [
                                 styles.send,
                                 {
-                                    backgroundColor: theme.accent,
+                                    backgroundColor: busy
+                                        ? theme.ink
+                                        : theme.accent,
                                     opacity:
                                         pressed ||
-                                        busy ||
-                                        (!input.trim() && !pendingImage)
+                                        (!busy &&
+                                            !input.trim() &&
+                                            !pendingImage)
                                             ? 0.5
                                             : 1,
                                 },
@@ -492,10 +602,14 @@ export default function ChatScreen() {
                             <Text
                                 style={[
                                     styles.sendIcon,
-                                    { color: theme.onAccent },
+                                    {
+                                        color: busy
+                                            ? theme.surface
+                                            : theme.onAccent,
+                                    },
                                 ]}
                             >
-                                ↑
+                                {busy ? "◼" : "↑"}
                             </Text>
                         </Pressable>
                     </View>
@@ -523,7 +637,10 @@ const styles = StyleSheet.create({
     },
     back: { fontFamily: Fonts.sansMedium, fontSize: 15 },
     headerTitle: { fontFamily: Fonts.display, fontSize: 20 },
-    headerSpacer: { width: 56 },
+    headerSpacer: { width: 56, alignItems: "flex-end" },
+    clear: { fontFamily: Fonts.sansMedium, fontSize: 14 },
+    statusRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    statusText: { fontFamily: Fonts.sans, fontSize: 13 },
     messages: {
         paddingHorizontal: Spacing.lg,
         paddingVertical: Spacing.md,

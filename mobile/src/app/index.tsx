@@ -1,6 +1,7 @@
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+    Animated,
     Pressable,
     RefreshControl,
     ScrollView,
@@ -31,6 +32,7 @@ import {
     type DashboardData,
     type MealRow,
 } from "@/lib/api";
+import { tapBuzz } from "@/lib/haptics";
 
 const MEAL_LABEL: Record<string, string> = {
     breakfast: "Breakfast",
@@ -54,6 +56,55 @@ function formatTime(iso: string): string {
         hour: "numeric",
         minute: "2-digit",
     });
+}
+
+/** Pulsing placeholder shown while the first dashboard load is in flight. */
+function DashboardSkeleton({
+    theme,
+}: {
+    theme: (typeof Colors)["light"] | (typeof Colors)["dark"];
+}) {
+    const [pulse] = useState(() => new Animated.Value(0.35));
+    useEffect(() => {
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(pulse, {
+                    toValue: 0.75,
+                    duration: 700,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(pulse, {
+                    toValue: 0.35,
+                    duration: 700,
+                    useNativeDriver: true,
+                }),
+            ]),
+        );
+        loop.start();
+        return () => loop.stop();
+    }, [pulse]);
+
+    const block = (extra: object) => [
+        { backgroundColor: theme.surfaceElevated, opacity: pulse },
+        extra,
+    ];
+    return (
+        <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
+            <View style={[styles.wrap, styles.skeletonWrap]}>
+                <Animated.View style={block(styles.skelLine)} />
+                <Animated.View style={block(styles.skelTitle)} />
+                <View style={styles.skelRings}>
+                    {[0, 1, 2].map((i) => (
+                        <Animated.View key={i} style={block(styles.skelRing)} />
+                    ))}
+                </View>
+                <Animated.View style={block(styles.skelCard)} />
+                {[0, 1, 2].map((i) => (
+                    <Animated.View key={i} style={block(styles.skelRow)} />
+                ))}
+            </View>
+        </SafeAreaView>
+    );
 }
 
 export default function DashboardScreen() {
@@ -120,7 +171,7 @@ export default function DashboardScreen() {
     }, [closeEditors, load]);
 
     if (!data) {
-        if (!failed) return null;
+        if (!failed) return <DashboardSkeleton theme={theme} />;
         return (
             <SafeAreaView
                 style={[
@@ -129,12 +180,27 @@ export default function DashboardScreen() {
                     { backgroundColor: theme.surface },
                 ]}
             >
+                <Text style={[styles.retryTitle, { color: theme.ink }]}>
+                    Can’t reach{"\n"}
+                    <Text style={{ color: theme.accent }}>the kitchen.</Text>
+                </Text>
+                <Text style={[styles.retryHint, { color: theme.inkMuted }]}>
+                    Check your connection — your data is safe on the server.
+                </Text>
                 <Pressable
                     accessibilityRole="button"
                     onPress={() => void load()}
+                    style={({ pressed }) => [
+                        styles.retryBtn,
+                        {
+                            borderColor: theme.hairline,
+                            backgroundColor: theme.surfaceElevated,
+                            opacity: pressed ? 0.7 : 1,
+                        },
+                    ]}
                 >
                     <Text style={[styles.retryText, { color: theme.ink }]}>
-                        {"Couldn't load — tap to retry"}
+                        Try again
                     </Text>
                 </Pressable>
             </SafeAreaView>
@@ -322,7 +388,10 @@ export default function DashboardScreen() {
                                 <Pressable
                                     key={ml}
                                     accessibilityRole="button"
-                                    onPress={() => void addWater(ml).then(load)}
+                                    onPress={() => {
+                                        tapBuzz();
+                                        void addWater(ml).then(load);
+                                    }}
                                     style={[
                                         styles.chip,
                                         { borderColor: theme.hairline },
@@ -346,9 +415,10 @@ export default function DashboardScreen() {
                                         key={e.id}
                                         accessibilityRole="button"
                                         accessibilityLabel={`Delete ${e.amount_ml} ml`}
-                                        onPress={() =>
-                                            void removeWater(e.id).then(load)
-                                        }
+                                        onPress={() => {
+                                            tapBuzz();
+                                            void removeWater(e.id).then(load);
+                                        }}
                                         style={[
                                             styles.chip,
                                             {
@@ -657,8 +727,46 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
     safe: { flex: 1 },
-    retryWrap: { alignItems: "center", justifyContent: "center" },
+    retryWrap: {
+        alignItems: "center",
+        justifyContent: "center",
+        gap: Spacing.md,
+        padding: Spacing.lg,
+    },
+    retryTitle: {
+        fontFamily: Fonts.display,
+        fontSize: 32,
+        lineHeight: 38,
+        textAlign: "center",
+    },
+    retryHint: {
+        fontFamily: Fonts.sans,
+        fontSize: 14,
+        textAlign: "center",
+    },
+    retryBtn: {
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.lg,
+        paddingVertical: 12,
+        marginTop: Spacing.sm,
+    },
     retryText: { fontFamily: Fonts.sansMedium, fontSize: 15 },
+    skeletonWrap: {
+        flex: 1,
+        padding: Spacing.lg,
+        gap: Spacing.md,
+    },
+    skelLine: { width: 140, height: 14, borderRadius: 7 },
+    skelTitle: { width: 220, height: 34, borderRadius: 8 },
+    skelRings: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        marginVertical: Spacing.md,
+    },
+    skelRing: { width: 92, height: 92, borderRadius: 46 },
+    skelCard: { height: 140, borderRadius: Radii.lg },
+    skelRow: { height: 64, borderRadius: Radii.md },
     scroll: { paddingBottom: Spacing.xxl * 2 },
     wrap: {
         width: "100%",

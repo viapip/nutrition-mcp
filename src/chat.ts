@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import {
     insertMeal,
     updateMeal,
@@ -470,10 +471,12 @@ async function callLlm(messages: unknown[]): Promise<LlmMessage> {
     return msg;
 }
 
-/** One chat turn: system prompt + history → tool loop → final assistant text. */
+/** One chat turn: system prompt + history → tool loop → final assistant text.
+ * `onTool` fires before each tool executes so a streaming caller can narrate. */
 export async function runChatTurn(
     userId: string,
     history: ChatMessage[],
+    onTool?: (name: string) => void,
 ): Promise<string> {
     const tz = await getUserTimezone(userId);
     const messages: unknown[] = [
@@ -506,6 +509,7 @@ export async function runChatTurn(
                 } catch {
                     // leave args empty; executeTool reports the validation error
                 }
+                onTool?.(call.function.name);
                 const result = await executeTool(
                     userId,
                     call.function.name,
@@ -564,11 +568,38 @@ export function createChatRouter() {
         ) {
             return c.json({ error: "invalid_request" }, 400);
         }
+        const userId = c.get("userId") as string;
+
+        // SSE: narrate tool calls while the turn runs, so the app can show
+        // live status instead of a minute of typing dots.
+        if (c.req.header("accept")?.includes("text/event-stream")) {
+            return streamSSE(c, async (stream) => {
+                try {
+                    const message = await runChatTurn(
+                        userId,
+                        history,
+                        (name) =>
+                            void stream.writeSSE({
+                                data: JSON.stringify({ type: "tool", name }),
+                            }),
+                    );
+                    await stream.writeSSE({
+                        data: JSON.stringify({ type: "done", message }),
+                    });
+                } catch (err) {
+                    console.error("Chat turn failed:", err);
+                    await stream.writeSSE({
+                        data: JSON.stringify({
+                            type: "error",
+                            error: "chat_failed",
+                        }),
+                    });
+                }
+            });
+        }
+
         try {
-            const message = await runChatTurn(
-                c.get("userId") as string,
-                history,
-            );
+            const message = await runChatTurn(userId, history);
             return c.json({ message });
         } catch (err) {
             console.error("Chat turn failed:", err);

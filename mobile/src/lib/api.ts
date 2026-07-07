@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { fetch as expoFetch } from "expo/fetch";
 
 /**
  * API client for the nutrition-mcp server (/api/login, /api/signup,
@@ -161,16 +162,67 @@ export async function getDashboard(): Promise<DashboardData> {
     return request<DashboardData>("/api/dashboard");
 }
 
-export async function sendChat(messages: ChatMessage[]): Promise<string> {
+/**
+ * Chat turn over SSE: `onTool` fires as the assistant runs each tool, so the
+ * UI can narrate progress. `expo/fetch` is WinterCG-compliant and streams on
+ * native; on web it's the regular fetch.
+ */
+export async function sendChat(
+    messages: ChatMessage[],
+    onTool?: (name: string) => void,
+    signal?: AbortSignal,
+): Promise<string> {
     if (MOCK) {
+        onTool?.("log_meal");
         await new Promise((r) => setTimeout(r, 900));
         return "Logged it — roughly 420 kcal, 18 g protein (estimated). Anything else?";
     }
-    const { message } = await request<{ message: string }>("/api/chat", {
+    const token = await getToken();
+    const res = await expoFetch(`${API_URL}/api/chat`, {
         method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ messages }),
+        signal,
     });
-    return message;
+    if (res.status === 401) {
+        await setToken(null);
+        throw new Error("unauthorized");
+    }
+    if (!res.ok || !res.body) throw new Error(`Request failed: ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line
+        for (;;) {
+            const cut = buffer.indexOf("\n\n");
+            if (cut < 0) break;
+            const frame = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            const data = frame
+                .split("\n")
+                .filter((l) => l.startsWith("data:"))
+                .map((l) => l.slice(5).trim())
+                .join("");
+            if (!data) continue;
+            const event = JSON.parse(data) as
+                | { type: "tool"; name: string }
+                | { type: "done"; message: string }
+                | { type: "error"; error: string };
+            if (event.type === "tool") onTool?.(event.name);
+            else if (event.type === "done") return event.message;
+            else throw new Error(event.error);
+        }
+    }
+    throw new Error("stream ended without a message");
 }
 
 // ----- manual editing -----

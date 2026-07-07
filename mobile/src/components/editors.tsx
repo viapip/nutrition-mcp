@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+    Animated,
     KeyboardAvoidingView,
     Modal,
-    Platform,
+    PanResponder,
     Pressable,
     StyleSheet,
     Text,
@@ -31,6 +32,7 @@ import {
     type MealRow,
     type MealType,
 } from "@/lib/api";
+import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const MEAL_TYPES: { key: MealType; label: string }[] = [
     { key: "breakfast", label: "Breakfast" },
@@ -71,6 +73,32 @@ function Sheet({
     children: React.ReactNode;
     theme: Theme;
 }) {
+    // Drag-to-dismiss: the handle zone (grabber + title) follows the finger,
+    // a decisive pull closes, anything else springs back.
+    const [drag] = useState(() => new Animated.Value(0));
+    const pan = useMemo(
+        () =>
+            PanResponder.create({
+                onMoveShouldSetPanResponder: (_e, g) =>
+                    g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+                onPanResponderMove: (_e, g) =>
+                    drag.setValue(Math.max(0, g.dy)),
+                onPanResponderRelease: (_e, g) => {
+                    if (g.dy > 90 || g.vy > 0.8) onClose();
+                    else {
+                        Animated.spring(drag, {
+                            toValue: 0,
+                            useNativeDriver: true,
+                        }).start();
+                    }
+                },
+            }),
+        [drag, onClose],
+    );
+    useEffect(() => {
+        if (visible) drag.setValue(0);
+    }, [visible, drag]);
+
     return (
         <Modal
             visible={visible}
@@ -78,31 +106,37 @@ function Sheet({
             animationType="slide"
             onRequestClose={onClose}
         >
+            {/* edge-to-edge Android needs padding too (SDK 57) */}
             <KeyboardAvoidingView
                 style={styles.backdropWrap}
-                behavior={Platform.OS === "ios" ? "padding" : undefined}
+                behavior="padding"
             >
                 <Pressable style={styles.backdrop} onPress={onClose} />
-                <View
+                <Animated.View
                     style={[
                         styles.sheet,
                         {
                             backgroundColor: theme.surfaceElevated,
                             borderColor: theme.hairline,
+                            transform: [{ translateY: drag }],
                         },
                     ]}
                 >
-                    <View
-                        style={[
-                            styles.grabber,
-                            { backgroundColor: theme.hairline },
-                        ]}
-                    />
-                    <Text style={[styles.sheetTitle, { color: theme.ink }]}>
-                        {title}
-                    </Text>
+                    <View style={styles.handleZone} {...pan.panHandlers}>
+                        <View
+                            style={[
+                                styles.grabber,
+                                { backgroundColor: theme.hairline },
+                            ]}
+                        />
+                        <Text
+                            style={[styles.sheetTitle, { color: theme.ink }]}
+                        >
+                            {title}
+                        </Text>
+                    </View>
                     {children}
-                </View>
+                </Animated.View>
             </KeyboardAvoidingView>
         </Modal>
     );
@@ -163,7 +197,10 @@ function SheetActions({
             {onDelete && (
                 <Pressable
                     accessibilityRole="button"
-                    onPress={onDelete}
+                    onPress={() => {
+                        tapBuzz();
+                        onDelete();
+                    }}
                     disabled={busy}
                     style={[styles.deleteBtn, { borderColor: theme.danger }]}
                 >
@@ -174,7 +211,10 @@ function SheetActions({
             )}
             <Pressable
                 accessibilityRole="button"
-                onPress={onSave}
+                onPress={() => {
+                    successBuzz();
+                    onSave();
+                }}
                 disabled={busy}
                 style={({ pressed }) => [
                     styles.saveBtn,
@@ -650,6 +690,7 @@ const styles = StyleSheet.create({
         paddingBottom: Spacing.xl,
         gap: Spacing.md,
     },
+    handleZone: { gap: Spacing.md },
     grabber: {
         alignSelf: "center",
         width: 40,

@@ -1,7 +1,10 @@
-import { View, Text, StyleSheet } from "react-native";
+import { useEffect, useState } from "react";
+import { Animated, View, Text, StyleSheet } from "react-native";
 import Svg, { Circle, G, Polyline, Line, Rect } from "react-native-svg";
 
 import { Fonts, Spacing, TabularNums, type Theme } from "@/constants/theme";
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 /**
  * Chart marks follow dataviz specs: 2px lines, >=8px end markers with a 2px
@@ -35,6 +38,20 @@ export function MacroRing({
     const c = 2 * Math.PI * r;
     const progress = goal ? Math.min(eaten / goal, 1) : 0;
 
+    // Sweep to the new value (e.g. returning from chat after logging a meal).
+    const [anim] = useState(() => new Animated.Value(0));
+    useEffect(() => {
+        Animated.timing(anim, {
+            toValue: progress,
+            duration: 600,
+            useNativeDriver: false, // svg props can't ride the native driver
+        }).start();
+    }, [progress, anim]);
+    const dashOffset = anim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [c, 0],
+    });
+
     return (
         <View style={ringStyles.wrap}>
             <Svg width={size} height={size}>
@@ -49,7 +66,7 @@ export function MacroRing({
                     fill="none"
                 />
                 {goal != null && (
-                    <Circle
+                    <AnimatedCircle
                         cx={size / 2}
                         cy={size / 2}
                         r={r}
@@ -57,7 +74,8 @@ export function MacroRing({
                         strokeWidth={stroke}
                         fill="none"
                         strokeLinecap="round"
-                        strokeDasharray={`${c * progress} ${c}`}
+                        strokeDasharray={`${c} ${c}`}
+                        strokeDashoffset={dashOffset}
                         transform={`rotate(-90 ${size / 2} ${size / 2})`}
                     />
                 )}

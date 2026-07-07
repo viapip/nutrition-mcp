@@ -79,11 +79,15 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
     ]);
 
     process.env.LLM_API_KEY = "test-key";
-    const reply = await runChatTurn("u1", [
-        { role: "user", content: "выпил стакан воды 300мл" },
-    ]);
+    const toolEvents: string[] = [];
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "выпил стакан воды 300мл" }],
+        (name) => toolEvents.push(name),
+    );
 
     expect(reply).toBe("Записал 300 мл воды.");
+    expect(toolEvents).toEqual(["log_water"]);
     // insert got the parsed amount
     expect(sqlCalls[2]!.values).toContain(300);
     // second LLM call carries the tool result back
