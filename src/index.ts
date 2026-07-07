@@ -263,9 +263,12 @@ if (!process.env.BASE_URL) {
 
 // ponytail: idempotent startup ALTER instead of a migration framework —
 // db/init only runs on a fresh data dir, existing deployments need this.
-getSql()`alter table profiles add column if not exists llm_api_key text`.catch(
-    (err) => console.error("Startup migration failed:", err),
-);
+// Awaited so no request can hit the missing column mid-migration.
+try {
+    await getSql()`alter table profiles add column if not exists llm_api_key text`;
+} catch (err) {
+    console.error("Startup migration failed:", err);
+}
 
 // Periodically delete expired meal-export files from the storage bucket.
 startExportCleanup();

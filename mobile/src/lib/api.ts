@@ -241,12 +241,12 @@ export async function getSettings(): Promise<Settings> {
 }
 
 /** Pass null to remove the stored key. */
-export async function saveLlmKey(key: string | null): Promise<void> {
+export async function saveLlmKey(key: string | null): Promise<Settings> {
     if (MOCK) {
         mockHasKey = !!key;
-        return;
+        return { has_llm_key: mockHasKey, chat_available: true };
     }
-    await request("/api/settings/llm", {
+    return request<Settings>("/api/settings/llm", {
         method: "PUT",
         body: JSON.stringify({ api_key: key }),
     });

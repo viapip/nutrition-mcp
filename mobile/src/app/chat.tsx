@@ -186,7 +186,11 @@ export default function ChatScreen() {
     useEffect(() => {
         AsyncStorage.getItem(CHAT_KEY)
             .then((raw) => {
-                if (raw) setMessages(JSON.parse(raw) as ChatMessage[]);
+                if (!raw) return;
+                const restored = JSON.parse(raw) as ChatMessage[];
+                // The user may have typed before hydration finished — never
+                // clobber a live conversation with the stored one.
+                setMessages((cur) => (cur.length ? cur : restored));
             })
             .catch(() => {})
             .finally(() => setHydrated(true));

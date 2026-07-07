@@ -294,8 +294,13 @@ export function createApiRouter() {
     });
 
     api.delete("/api/meals/:id", authenticateBearer, async (c) => {
-        await deleteMeal(c.get("userId") as string, c.req.param("id"));
-        return c.json({ ok: true });
+        const deleted = await deleteMeal(
+            c.get("userId") as string,
+            c.req.param("id"),
+        );
+        return deleted
+            ? c.json({ ok: true })
+            : c.json({ error: "not_found" }, 404);
     });
 
     api.post("/api/water", authenticateBearer, async (c) => {
@@ -311,8 +316,13 @@ export function createApiRouter() {
     });
 
     api.delete("/api/water/:id", authenticateBearer, async (c) => {
-        await deleteWater(c.get("userId") as string, c.req.param("id"));
-        return c.json({ ok: true });
+        const deleted = await deleteWater(
+            c.get("userId") as string,
+            c.req.param("id"),
+        );
+        return deleted
+            ? c.json({ ok: true })
+            : c.json({ error: "not_found" }, 404);
     });
 
     api.post("/api/weight", authenticateBearer, async (c) => {
@@ -379,7 +389,10 @@ export function createApiRouter() {
             await upsertProfile(c.get("userId") as string, {
                 llm_api_key: key,
             });
-            return c.json({ has_llm_key: !!key });
+            return c.json({
+                has_llm_key: !!key,
+                chat_available: !!key || !!process.env.LLM_API_KEY,
+            });
         } catch {
             return c.json({ error: "invalid_request" }, 400);
         }

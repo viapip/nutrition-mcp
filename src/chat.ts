@@ -357,11 +357,15 @@ export async function executeTool(
                 return JSON.stringify({ updated: true, meal });
             }
             case "delete_meal": {
-                await deleteMeal(userId, String(args.id ?? ""));
+                if (!(await deleteMeal(userId, String(args.id ?? "")))) {
+                    throw new Error("meal not found");
+                }
                 return JSON.stringify({ deleted: true });
             }
             case "delete_water": {
-                await deleteWater(userId, String(args.id ?? ""));
+                if (!(await deleteWater(userId, String(args.id ?? "")))) {
+                    throw new Error("water entry not found");
+                }
                 return JSON.stringify({ deleted: true });
             }
             case "update_weight": {
@@ -449,6 +453,7 @@ interface LlmMessage {
 async function callLlm(
     messages: unknown[],
     apiKey: string,
+    signal?: AbortSignal,
 ): Promise<LlmMessage> {
     const res = await fetch(`${LLM_BASE_URL()}/chat/completions`, {
         method: "POST",
@@ -462,7 +467,9 @@ async function callLlm(
             tools: TOOLS,
             temperature: 0.3,
         }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+            : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
         throw new Error(`LLM request failed: ${res.status}`);
@@ -482,6 +489,7 @@ export async function runChatTurn(
     history: ChatMessage[],
     apiKey: string,
     onTool?: (name: string) => void,
+    signal?: AbortSignal,
 ): Promise<string> {
     const tz = await getUserTimezone(userId);
     const messages: unknown[] = [
@@ -504,10 +512,12 @@ export async function runChatTurn(
     let logged = false;
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const msg = await callLlm(messages, apiKey);
+            const msg = await callLlm(messages, apiKey, signal);
             if (!msg.tool_calls?.length) return msg.content ?? "";
             messages.push(msg);
             for (const call of msg.tool_calls) {
+                // Client hit Stop — don't run tools it no longer wants.
+                if (signal?.aborted) throw new Error("aborted");
                 let args: Record<string, unknown> = {};
                 try {
                     args = JSON.parse(call.function.arguments || "{}");
@@ -592,6 +602,9 @@ export function createChatRouter() {
                             void stream.writeSSE({
                                 data: JSON.stringify({ type: "tool", name }),
                             }),
+                        // Client Stop aborts the request; stop burning tokens
+                        // and running tools for an answer nobody will see.
+                        c.req.raw.signal,
                     );
                     await stream.writeSSE({
                         data: JSON.stringify({ type: "done", message }),
@@ -609,7 +622,13 @@ export function createChatRouter() {
         }
 
         try {
-            const message = await runChatTurn(userId, history, apiKey);
+            const message = await runChatTurn(
+                userId,
+                history,
+                apiKey,
+                undefined,
+                c.req.raw.signal,
+            );
             return c.json({ message });
         } catch (err) {
             console.error("Chat turn failed:", err);

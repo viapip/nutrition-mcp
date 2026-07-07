@@ -32,7 +32,7 @@ import {
     type DashboardData,
     type MealRow,
 } from "@/lib/api";
-import { tapBuzz } from "@/lib/haptics";
+import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const MEAL_LABEL: Record<string, string> = {
     breakfast: "Breakfast",
@@ -166,6 +166,7 @@ export default function DashboardScreen() {
     }, []);
 
     const editorDone = useCallback(() => {
+        successBuzz();
         closeEditors();
         void load();
     }, [closeEditors, load]);

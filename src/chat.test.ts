@@ -156,6 +156,40 @@ test("executeTool set_goals merges with current goals", async () => {
     expect(calls[1]!.values).toContain(74000);
 });
 
+test("runChatTurn stops before running tools when the client aborted", async () => {
+    installFakeSql([
+        { rows: [] }, // getUserTimezone
+    ]);
+    fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: {
+                        name: "log_water",
+                        arguments: '{"amount_ml":300}',
+                    },
+                },
+            ],
+        },
+    ]);
+    const ctrl = new AbortController();
+    ctrl.abort();
+    // Aborted before the tool round → no insertWater SQL steps are consumed,
+    // otherwise the fake script would reject with "unexpected".
+    await expect(
+        runChatTurn(
+            "u1",
+            [{ role: "user", content: "log water" }],
+            "test-key",
+            undefined,
+            ctrl.signal,
+        ),
+    ).rejects.toThrow("aborted");
+});
+
 test("executeTool rejects implausible weight", async () => {
     installFakeSql([]);
     const bad = JSON.parse(

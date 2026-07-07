@@ -32,7 +32,7 @@ import {
     type MealRow,
     type MealType,
 } from "@/lib/api";
-import { tapBuzz, successBuzz } from "@/lib/haptics";
+import { tapBuzz } from "@/lib/haptics";
 
 const MEAL_TYPES: { key: MealType; label: string }[] = [
     { key: "breakfast", label: "Breakfast" },
@@ -81,8 +81,7 @@ function Sheet({
             PanResponder.create({
                 onMoveShouldSetPanResponder: (_e, g) =>
                     g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
-                onPanResponderMove: (_e, g) =>
-                    drag.setValue(Math.max(0, g.dy)),
+                onPanResponderMove: (_e, g) => drag.setValue(Math.max(0, g.dy)),
                 onPanResponderRelease: (_e, g) => {
                     if (g.dy > 90 || g.vy > 0.8) onClose();
                     else {
@@ -129,9 +128,7 @@ function Sheet({
                                 { backgroundColor: theme.hairline },
                             ]}
                         />
-                        <Text
-                            style={[styles.sheetTitle, { color: theme.ink }]}
-                        >
+                        <Text style={[styles.sheetTitle, { color: theme.ink }]}>
                             {title}
                         </Text>
                     </View>
@@ -212,7 +209,9 @@ function SheetActions({
             <Pressable
                 accessibilityRole="button"
                 onPress={() => {
-                    successBuzz();
+                    // success feedback comes from the caller after the save
+                    // actually lands — here it's just a tap acknowledgement
+                    tapBuzz();
                     onSave();
                 }}
                 disabled={busy}

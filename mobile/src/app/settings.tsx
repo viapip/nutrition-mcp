@@ -73,7 +73,13 @@ export default function SettingsScreen() {
                 setHasKey(s.has_llm_key);
                 setChatAvailable(s.chat_available);
             })
-            .catch(() => setHasKey(false));
+            .catch((err) => {
+                if (err instanceof Error && err.message === "unauthorized") {
+                    router.replace("/login");
+                } else {
+                    setHasKey(false);
+                }
+            });
     }, []);
 
     const save = async (value: string | null) => {
@@ -81,13 +87,17 @@ export default function SettingsScreen() {
         setBusy(true);
         setNote(null);
         try {
-            await saveLlmKey(value);
-            setHasKey(!!value);
-            if (value) setChatAvailable(true);
+            const s = await saveLlmKey(value);
+            setHasKey(s.has_llm_key);
+            setChatAvailable(s.chat_available);
             setKey("");
             setNote(value ? "Key saved." : "Key removed.");
             successBuzz();
-        } catch {
+        } catch (err) {
+            if (err instanceof Error && err.message === "unauthorized") {
+                router.replace("/login");
+                return;
+            }
             setNote("Couldn't save — check the key and try again.");
         } finally {
             setBusy(false);
@@ -141,11 +151,9 @@ export default function SettingsScreen() {
                             what you use.
                         </Text>
 
-                        {hasKey != null && (
-                            <KeyStatus
-                                hasKey={hasKey && chatAvailable}
-                                theme={theme}
-                            />
+                        {/* No key anywhere → the danger note below explains */}
+                        {hasKey != null && (hasKey || chatAvailable) && (
+                            <KeyStatus hasKey={hasKey} theme={theme} />
                         )}
                         {!chatAvailable && !hasKey && (
                             <Text

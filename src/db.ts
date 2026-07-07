@@ -431,11 +431,13 @@ export async function getAllMeals(userId: string): Promise<Meal[]> {
     }
 }
 
-export async function deleteMeal(userId: string, id: string): Promise<void> {
+export async function deleteMeal(userId: string, id: string): Promise<boolean> {
     const db = getSql();
     try {
-        await db`
-            delete from meals where id = ${id} and user_id = ${userId}`;
+        const rows = await db`
+            delete from meals where id = ${id} and user_id = ${userId}
+            returning id`;
+        return rows.length > 0;
     } catch (err) {
         throw new Error(`Failed to delete meal: ${errMsg(err)}`);
     }
@@ -763,11 +765,16 @@ export async function getWaterInRange(
     }
 }
 
-export async function deleteWater(userId: string, id: string): Promise<void> {
+export async function deleteWater(
+    userId: string,
+    id: string,
+): Promise<boolean> {
     const db = getSql();
     try {
-        await db`
-            delete from water_log where id = ${id} and user_id = ${userId}`;
+        const rows = await db`
+            delete from water_log where id = ${id} and user_id = ${userId}
+            returning id`;
+        return rows.length > 0;
     } catch (err) {
         throw new Error(`Failed to delete water: ${errMsg(err)}`);
     }
