@@ -218,9 +218,14 @@ export async function resolveGoogleUser(
         if (byEmail.google_sub != null)
             throw new Error("Google sign-in failed");
         try {
+            // password_hash is nulled on link: signup never proves email
+            // ownership, so a pre-planted password on this address must not
+            // survive the real owner's first Google sign-in (account
+            // takeover). Google just proved ownership; the password didn't.
             const [linked] = await db`
                 update users
-                set google_sub = ${sub}, email_verified = true, updated_at = now()
+                set google_sub = ${sub}, email_verified = true,
+                    password_hash = null, updated_at = now()
                 where id = ${byEmail.id} and google_sub is null
                 returning id`;
             if (linked) return linked.id as string;

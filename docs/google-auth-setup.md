@@ -69,16 +69,21 @@ revisit to add a logo or homepage/privacy links.
 **Yes — automatically — as long as the Google account's email matches the email
 they registered with.** `signInWithGoogleIdToken` (`src/db.ts`) links a Google
 identity (`google_sub`) to an existing `users` row whenever the token's email
-matches and Google reports it **verified** (`email_verified: true`) — an
-unverified email is never linked, to prevent pre-account-takeover attacks.
+matches and Google reports it **verified** (`email_verified: true`) — a Google
+token with an unverified email is never linked.
+
+Linking also **clears the account's password**: password signup never proves
+ownership of the address, so a password planted on someone else's email must
+not survive the real owner's first Google sign-in (pre-account-takeover).
+After linking, the account is Google-only.
 
 So the outcomes are:
 
-| Situation                                            | Result                                  |
-| ---------------------------------------------------- | --------------------------------------- |
-| Google email matches a **verified** existing account | Linked to the **same** user — data kept |
-| Google email is new                                  | A fresh user is created                 |
-| Google email differs from the user's registered one  | No match → a separate account           |
+| Situation                                           | Result                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------- |
+| Google email matches an existing password account   | Linked to the **same** user — data kept, password invalidated |
+| Google email is new                                 | A fresh user is created                                       |
+| Google email differs from the user's registered one | No match → a separate account                                 |
 
 Nothing in the app or on the user's part is required for linking — it happens
 server-side during sign-in.

@@ -259,6 +259,9 @@ describe("resolveGoogleUser", () => {
         expect(await resolveGoogleUser("sub-2", "a@b.com")).toBe("user-2");
         // The link must be guarded so a concurrently-linked row isn't rebound.
         expect(calls[2]!.text.toLowerCase()).toContain("google_sub is null");
+        // Linking must invalidate a possibly pre-planted password: signup
+        // never proved email ownership, Google just did.
+        expect(calls[2]!.text.toLowerCase()).toContain("password_hash = null");
     });
 
     test("refuses when the email account already belongs to another Google identity", async () => {

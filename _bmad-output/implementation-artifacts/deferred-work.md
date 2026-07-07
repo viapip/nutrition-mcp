@@ -3,6 +3,7 @@
 - source_spec: `spec-migrate-supabase-to-postgres.md`
   summary: Линковка Google к существующему password-аккаунту не инвалидирует пароль — окно pre-account-takeover (атакующий заранее регистрирует чужой email).
   evidence: Blind Hunter #1; signup не подтверждает владение почтой, byEmail-линковка оставляет password_hash атакующего валидным. Поведение портировано из Supabase (auto-confirm) — не регресс, но требует решения: обнулять password_hash при линковке или вводить подтверждение email.
+  resolution: закрыто после повторного HIGH-флага от автоматического ревью коммита — password_hash обнуляется при линковке (fix(auth)-коммит вслед за 0173fc8); полноценная email-верификация по-прежнему возможное будущее улучшение.
 
 - source_spec: `spec-migrate-supabase-to-postgres.md`
   summary: Rate-limit по IP опирается на спуфабельный X-Forwarded-For; credential stuffing по многим email не ограничен.
