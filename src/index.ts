@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { createOAuthRouter } from "./oauth.js";
 import { createApiRouter } from "./api.js";
+import { createChatRouter } from "./chat.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { handleMcp } from "./mcp.js";
 import { startExportCleanup } from "./export.js";
@@ -45,13 +46,19 @@ app.use("*", async (c, next) => {
     c.header("Referrer-Policy", "no-referrer");
 });
 
-// Body limit
-app.use(
-    "*",
-    bodyLimit({
-        maxSize: 1024 * 1024,
-        onError: (c) => c.json({ error: "payload_too_large" }, 413),
-    }),
+// Body limit; /api/chat gets a higher cap for inline food photos (data URLs).
+const defaultBodyLimit = bodyLimit({
+    maxSize: 1024 * 1024,
+    onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+const chatBodyLimit = bodyLimit({
+    maxSize: 8 * 1024 * 1024,
+    onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+app.use("*", (c, next) =>
+    (new URL(c.req.url).pathname === "/api/chat"
+        ? chatBodyLimit
+        : defaultBodyLimit)(c, next),
 );
 
 // CORS
@@ -71,7 +78,7 @@ app.use(
                 [];
             return allowed.includes(origin) ? origin : null;
         },
-        allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
         allowHeaders: [
             "Content-Type",
             "Authorization",
@@ -119,6 +126,9 @@ app.route("/", createOAuthRouter());
 
 // Mobile app REST API (/api/login, /api/dashboard)
 app.route("/", createApiRouter());
+
+// Mobile app chat (/api/chat) — LLM with tool-use over the data layer
+app.route("/", createChatRouter());
 
 // MCP endpoint (protected)
 app.all("/mcp", authenticateBearer, rateLimit, handleMcp);

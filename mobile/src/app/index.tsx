@@ -1,5 +1,5 @@
-import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
 import {
     Pressable,
     RefreshControl,
@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { MacroRing, WaterBars, WeightSparkline } from "@/components/charts";
+import { GoalsEditor, MealEditor, WeightEditor } from "@/components/editors";
 import {
     Colors,
     Fonts,
@@ -21,7 +22,15 @@ import {
     Spacing,
     TabularNums,
 } from "@/constants/theme";
-import { getDashboard, getToken, logout, type DashboardData } from "@/lib/api";
+import {
+    addWater,
+    getDashboard,
+    getToken,
+    logout,
+    removeWater,
+    type DashboardData,
+    type MealRow,
+} from "@/lib/api";
 
 const MEAL_LABEL: Record<string, string> = {
     breakfast: "Breakfast",
@@ -29,6 +38,8 @@ const MEAL_LABEL: Record<string, string> = {
     dinner: "Dinner",
     snack: "Snack",
 };
+
+const WATER_PRESETS = [150, 250, 500];
 
 function formatDate(iso: string): string {
     return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", {
@@ -54,6 +65,15 @@ export default function DashboardScreen() {
 
     const [data, setData] = useState<DashboardData | null>(null);
     const [refreshing, setRefreshing] = useState(false);
+    const [mealEditor, setMealEditor] = useState<{
+        visible: boolean;
+        meal: MealRow | null;
+    }>({ visible: false, meal: null });
+    const [weightEditor, setWeightEditor] = useState<{
+        visible: boolean;
+        entry: { id: string; weight_g: number } | null;
+    }>({ visible: false, entry: null });
+    const [goalsVisible, setGoalsVisible] = useState(false);
 
     const load = useCallback(async () => {
         try {
@@ -63,18 +83,33 @@ export default function DashboardScreen() {
         }
     }, []);
 
-    useEffect(() => {
-        getToken().then((t) => {
-            if (!t) router.replace("/login");
-            else load();
-        });
-    }, [load]);
+    // Reload whenever the screen regains focus (e.g. returning from chat,
+    // where the assistant may have logged something).
+    useFocusEffect(
+        useCallback(() => {
+            getToken().then((t) => {
+                if (!t) router.replace("/login");
+                else load();
+            });
+        }, [load]),
+    );
 
     const refresh = useCallback(async () => {
         setRefreshing(true);
         await load();
         setRefreshing(false);
     }, [load]);
+
+    const closeEditors = useCallback(() => {
+        setMealEditor({ visible: false, meal: null });
+        setWeightEditor({ visible: false, entry: null });
+        setGoalsVisible(false);
+    }, []);
+
+    const editorDone = useCallback(() => {
+        closeEditors();
+        void load();
+    }, [closeEditors, load]);
 
     if (!data) return null;
 
@@ -84,6 +119,7 @@ export default function DashboardScreen() {
     const waterPct = data.water.goal_ml
         ? Math.min(data.water.total_ml / data.water.goal_ml, 1)
         : 0;
+    const lastWeightPoint = data.weight.series.at(-1) ?? null;
 
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
@@ -101,7 +137,25 @@ export default function DashboardScreen() {
                     <Text style={[styles.eyebrow, { color: theme.inkMuted }]}>
                         {formatDate(data.date).toUpperCase()}
                     </Text>
-                    <Text style={[styles.h1, { color: theme.ink }]}>Today</Text>
+                    <View style={styles.titleRow}>
+                        <Text style={[styles.h1, { color: theme.ink }]}>
+                            Today
+                        </Text>
+                        <Pressable
+                            accessibilityRole="button"
+                            onPress={() => setGoalsVisible(true)}
+                            hitSlop={8}
+                        >
+                            <Text
+                                style={[
+                                    styles.headerAction,
+                                    { color: theme.accent },
+                                ]}
+                            >
+                                Goals
+                            </Text>
+                        </Pressable>
+                    </View>
 
                     {/* Hero: calories */}
                     <View
@@ -235,6 +289,66 @@ export default function DashboardScreen() {
                             theme={theme}
                             width={contentW}
                         />
+                        <View style={styles.chipRow}>
+                            {WATER_PRESETS.map((ml) => (
+                                <Pressable
+                                    key={ml}
+                                    accessibilityRole="button"
+                                    onPress={() => void addWater(ml).then(load)}
+                                    style={[
+                                        styles.chip,
+                                        { borderColor: theme.hairline },
+                                    ]}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.chipText,
+                                            { color: theme.water },
+                                        ]}
+                                    >
+                                        +{ml} ml
+                                    </Text>
+                                </Pressable>
+                            ))}
+                        </View>
+                        {data.water.entries.length > 0 && (
+                            <View style={styles.chipRow}>
+                                {data.water.entries.map((e) => (
+                                    <Pressable
+                                        key={e.id}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Delete ${e.amount_ml} ml`}
+                                        onPress={() =>
+                                            void removeWater(e.id).then(load)
+                                        }
+                                        style={[
+                                            styles.chip,
+                                            {
+                                                borderColor: theme.hairline,
+                                                backgroundColor: theme.surface,
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.chipText,
+                                                TabularNums,
+                                                { color: theme.inkSecondary },
+                                            ]}
+                                        >
+                                            {e.amount_ml} ml{"  "}
+                                            <Text
+                                                style={{
+                                                    color: theme.inkMuted,
+                                                }}
+                                            >
+                                                ×
+                                            </Text>
+                                        </Text>
+                                    </Pressable>
+                                ))}
+                            </View>
+                        )}
                         {data.water.goal_ml != null && (
                             <Text
                                 style={[
@@ -242,46 +356,45 @@ export default function DashboardScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                {Math.round(waterPct * 100)}% of daily goal
+                                {Math.round(waterPct * 100)}% of daily goal —
+                                tap an entry to remove it
                             </Text>
                         )}
                     </View>
 
                     {/* Weight */}
-                    {data.weight.series.length >= 2 && (
-                        <View
-                            style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
-                            ]}
-                        >
-                            <View style={styles.cardHeader}>
+                    <View
+                        style={[
+                            styles.card,
+                            {
+                                backgroundColor: theme.surfaceElevated,
+                                borderColor: theme.hairline,
+                            },
+                        ]}
+                    >
+                        <View style={styles.cardHeader}>
+                            <Text
+                                style={[
+                                    styles.cardLabel,
+                                    { color: theme.inkSecondary },
+                                ]}
+                            >
+                                Weight · 30 days
+                            </Text>
+                            {data.weight.current_g != null && (
                                 <Text
                                     style={[
-                                        styles.cardLabel,
-                                        { color: theme.inkSecondary },
+                                        styles.cardValue,
+                                        TabularNums,
+                                        { color: theme.ink },
                                     ]}
                                 >
-                                    Weight · 30 days
+                                    {(data.weight.current_g / 1000).toFixed(1)}{" "}
+                                    kg
                                 </Text>
-                                {data.weight.current_g != null && (
-                                    <Text
-                                        style={[
-                                            styles.cardValue,
-                                            TabularNums,
-                                            { color: theme.ink },
-                                        ]}
-                                    >
-                                        {(data.weight.current_g / 1000).toFixed(
-                                            1,
-                                        )}{" "}
-                                        kg
-                                    </Text>
-                                )}
-                            </View>
+                            )}
+                        </View>
+                        {data.weight.series.length >= 2 && (
                             <WeightSparkline
                                 series={data.weight.series}
                                 targetG={data.weight.target_g}
@@ -289,23 +402,90 @@ export default function DashboardScreen() {
                                 theme={theme}
                                 width={contentW}
                             />
-                            {data.weight.target_g != null && (
+                        )}
+                        <View style={styles.chipRow}>
+                            <Pressable
+                                accessibilityRole="button"
+                                onPress={() =>
+                                    setWeightEditor({
+                                        visible: true,
+                                        entry: null,
+                                    })
+                                }
+                                style={[
+                                    styles.chip,
+                                    { borderColor: theme.hairline },
+                                ]}
+                            >
                                 <Text
                                     style={[
-                                        styles.footnote,
-                                        { color: theme.inkMuted },
+                                        styles.chipText,
+                                        { color: theme.accent },
                                     ]}
                                 >
-                                    Goal:{" "}
-                                    {(data.weight.target_g / 1000).toFixed(1)}{" "}
-                                    kg
+                                    Log weight
                                 </Text>
+                            </Pressable>
+                            {lastWeightPoint && (
+                                <Pressable
+                                    accessibilityRole="button"
+                                    onPress={() =>
+                                        setWeightEditor({
+                                            visible: true,
+                                            entry: lastWeightPoint,
+                                        })
+                                    }
+                                    style={[
+                                        styles.chip,
+                                        { borderColor: theme.hairline },
+                                    ]}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.chipText,
+                                            { color: theme.inkSecondary },
+                                        ]}
+                                    >
+                                        Edit last
+                                    </Text>
+                                </Pressable>
                             )}
                         </View>
-                    )}
+                        {data.weight.target_g != null && (
+                            <Text
+                                style={[
+                                    styles.footnote,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                Goal: {(data.weight.target_g / 1000).toFixed(1)}{" "}
+                                kg
+                            </Text>
+                        )}
+                    </View>
 
                     {/* Meals */}
-                    <Text style={[styles.h2, { color: theme.ink }]}>Meals</Text>
+                    <View style={styles.titleRow}>
+                        <Text style={[styles.h2, { color: theme.ink }]}>
+                            Meals
+                        </Text>
+                        <Pressable
+                            accessibilityRole="button"
+                            onPress={() =>
+                                setMealEditor({ visible: true, meal: null })
+                            }
+                            hitSlop={8}
+                        >
+                            <Text
+                                style={[
+                                    styles.headerAction,
+                                    { color: theme.accent },
+                                ]}
+                            >
+                                + Add
+                            </Text>
+                        </Pressable>
+                    </View>
                     <View
                         style={[
                             styles.card,
@@ -323,12 +503,17 @@ export default function DashboardScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                Nothing logged yet — tell Claude what you ate.
+                                Nothing logged yet — tell the assistant what you
+                                ate.
                             </Text>
                         )}
                         {data.meals.map((meal, i) => (
-                            <View
+                            <Pressable
                                 key={meal.id}
+                                accessibilityRole="button"
+                                onPress={() =>
+                                    setMealEditor({ visible: true, meal })
+                                }
                                 style={[
                                     styles.mealRow,
                                     i > 0 && {
@@ -372,7 +557,7 @@ export default function DashboardScreen() {
                                         {meal.calories}
                                     </Text>
                                 )}
-                            </View>
+                            </Pressable>
                         ))}
                     </View>
 
@@ -391,13 +576,60 @@ export default function DashboardScreen() {
                     </Pressable>
                 </View>
             </ScrollView>
+
+            {/* Assistant FAB */}
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open assistant chat"
+                onPress={() => router.push("/chat")}
+                style={({ pressed }) => [
+                    styles.fab,
+                    {
+                        backgroundColor: theme.accent,
+                        opacity: pressed ? 0.9 : 1,
+                    },
+                ]}
+            >
+                <Text style={[styles.fabText, { color: theme.onAccent }]}>
+                    ✳ Assistant
+                </Text>
+            </Pressable>
+
+            <MealEditor
+                visible={mealEditor.visible}
+                meal={mealEditor.meal}
+                onDone={editorDone}
+                onClose={closeEditors}
+            />
+            <WeightEditor
+                visible={weightEditor.visible}
+                entry={weightEditor.entry}
+                onDone={editorDone}
+                onClose={closeEditors}
+            />
+            <GoalsEditor
+                visible={goalsVisible}
+                initial={{
+                    daily_calories: data.calories.goal,
+                    daily_protein_g: data.macros.protein.goal,
+                    daily_carbs_g: data.macros.carbs.goal,
+                    daily_fat_g: data.macros.fat.goal,
+                    daily_water_ml: data.water.goal_ml,
+                    target_weight_kg:
+                        data.weight.target_g == null
+                            ? null
+                            : data.weight.target_g / 1000,
+                }}
+                onDone={editorDone}
+                onClose={closeEditors}
+            />
         </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     safe: { flex: 1 },
-    scroll: { paddingBottom: Spacing.xxl },
+    scroll: { paddingBottom: Spacing.xxl * 2 },
     wrap: {
         width: "100%",
         maxWidth: MaxContentWidth,
@@ -411,6 +643,12 @@ const styles = StyleSheet.create({
         fontSize: 12,
         letterSpacing: 2.5,
     },
+    titleRow: {
+        flexDirection: "row",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+    },
+    headerAction: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     h1: {
         fontFamily: Fonts.display,
         fontSize: 40,
@@ -446,6 +684,18 @@ const styles = StyleSheet.create({
         justifyContent: "space-around",
         paddingVertical: Spacing.lg,
     },
+    chipRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: Spacing.sm,
+    },
+    chip: {
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 7,
+    },
+    chipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     footnote: { fontFamily: Fonts.sans, fontSize: 12 },
     mealsCard: { gap: 0 },
     mealRow: {
@@ -468,4 +718,18 @@ const styles = StyleSheet.create({
         textAlign: "center",
         paddingVertical: Spacing.md,
     },
+    fab: {
+        position: "absolute",
+        bottom: Spacing.lg,
+        alignSelf: "center",
+        borderRadius: 28,
+        paddingHorizontal: Spacing.lg,
+        paddingVertical: 14,
+        shadowColor: "#000",
+        shadowOpacity: 0.25,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 6,
+    },
+    fabText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
 });

@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { login } from "@/lib/api";
+import { login, signup } from "@/lib/api";
 import {
     Colors,
     Fonts,
@@ -25,8 +25,10 @@ export default function LoginScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
 
+    const [mode, setMode] = useState<"signin" | "signup">("signin");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [code, setCode] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
@@ -35,10 +37,18 @@ export default function LoginScreen() {
         setBusy(true);
         setError(null);
         try {
-            await login(email.trim(), password);
+            if (mode === "signin") {
+                await login(email.trim(), password);
+            } else {
+                await signup(email.trim(), password, code.trim() || undefined);
+            }
             router.replace("/");
         } catch {
-            setError("Wrong email or password. Try again.");
+            setError(
+                mode === "signin"
+                    ? "Wrong email or password. Try again."
+                    : "Couldn't create the account — check the fields (and the invite code, if the server requires one).",
+            );
         } finally {
             setBusy(false);
         }
@@ -101,6 +111,24 @@ export default function LoginScreen() {
                             onChangeText={setPassword}
                             onSubmitEditing={submit}
                         />
+                        {mode === "signup" && (
+                            <TextInput
+                                style={[
+                                    styles.input,
+                                    {
+                                        backgroundColor: theme.surfaceElevated,
+                                        borderColor: theme.hairline,
+                                        color: theme.ink,
+                                    },
+                                ]}
+                                placeholder="Invite code (if you were given one)"
+                                placeholderTextColor={theme.inkMuted}
+                                autoCapitalize="none"
+                                value={code}
+                                onChangeText={setCode}
+                                onSubmitEditing={submit}
+                            />
+                        )}
                         {error && (
                             <Text
                                 style={[styles.error, { color: theme.danger }]}
@@ -126,14 +154,38 @@ export default function LoginScreen() {
                                     { color: theme.onAccent },
                                 ]}
                             >
-                                {busy ? "Signing in…" : "Sign in"}
+                                {busy
+                                    ? "One moment…"
+                                    : mode === "signin"
+                                      ? "Sign in"
+                                      : "Create account"}
+                            </Text>
+                        </Pressable>
+                        <Pressable
+                            accessibilityRole="button"
+                            onPress={() => {
+                                setMode(
+                                    mode === "signin" ? "signup" : "signin",
+                                );
+                                setError(null);
+                            }}
+                        >
+                            <Text
+                                style={[
+                                    styles.switchMode,
+                                    { color: theme.accent },
+                                ]}
+                            >
+                                {mode === "signin"
+                                    ? "New here? Create an account"
+                                    : "Have an account? Sign in"}
                             </Text>
                         </Pressable>
                     </View>
 
                     <Text style={[styles.footnote, { color: theme.inkMuted }]}>
-                        Log meals by talking to Claude — this app is your
-                        mirror.
+                        Snap your plate, tell the assistant — the table keeps
+                        the score.
                     </Text>
                 </View>
             </KeyboardAvoidingView>
@@ -182,6 +234,12 @@ const styles = StyleSheet.create({
         marginTop: Spacing.sm,
     },
     buttonText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
+    switchMode: {
+        fontFamily: Fonts.sansMedium,
+        fontSize: 14,
+        textAlign: "center",
+        paddingVertical: Spacing.sm,
+    },
     footnote: {
         fontFamily: Fonts.sans,
         fontSize: 13,

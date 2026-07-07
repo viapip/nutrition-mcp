@@ -2,9 +2,9 @@ import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 
 /**
- * API client for the nutrition-mcp server (POST /api/login, GET
- * /api/dashboard). EXPO_PUBLIC_API_URL unset = mock mode with fixture data so
- * the app runs standalone.
+ * API client for the nutrition-mcp server (/api/login, /api/signup,
+ * /api/dashboard, /api/chat, and the manual-edit CRUD). EXPO_PUBLIC_API_URL
+ * unset = mock mode with fixture data so the app runs standalone.
  */
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 const MOCK = API_URL === "";
@@ -32,17 +32,47 @@ export interface MacroProgress {
     goal: number | null;
 }
 
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+
 export interface MealRow {
     id: string;
-    meal_type: "breakfast" | "lunch" | "dinner" | "snack" | null;
+    meal_type: MealType | null;
     description: string;
     calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    logged_at: string;
+}
+
+export interface MealFields {
+    description: string;
+    meal_type: MealType;
+    calories?: number | null;
+    protein_g?: number | null;
+    carbs_g?: number | null;
+    fat_g?: number | null;
+}
+
+export interface WaterRow {
+    id: string;
+    amount_ml: number;
     logged_at: string;
 }
 
 export interface WeightPoint {
     date: string;
+    id: string;
     weight_g: number;
+}
+
+export interface GoalsInput {
+    daily_calories: number | null;
+    daily_protein_g: number | null;
+    daily_carbs_g: number | null;
+    daily_fat_g: number | null;
+    daily_water_ml: number | null;
+    target_weight_kg: number | null;
 }
 
 export interface DashboardData {
@@ -53,13 +83,27 @@ export interface DashboardData {
         carbs: MacroProgress;
         fat: MacroProgress;
     };
-    water: { total_ml: number; goal_ml: number | null; by_hour: number[] };
+    water: {
+        total_ml: number;
+        goal_ml: number | null;
+        by_hour: number[];
+        entries: WaterRow[];
+    };
     weight: {
         current_g: number | null;
         target_g: number | null;
         series: WeightPoint[];
     };
     meals: MealRow[];
+}
+
+export type ChatPart =
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } };
+
+export interface ChatMessage {
+    role: "user" | "assistant";
+    content: string | ChatPart[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -92,13 +136,160 @@ export async function login(email: string, password: string): Promise<void> {
     await setToken(token);
 }
 
+export async function signup(
+    email: string,
+    password: string,
+    code?: string,
+): Promise<void> {
+    if (MOCK) {
+        await setToken("mock-token");
+        return;
+    }
+    const { token } = await request<{ token: string }>("/api/signup", {
+        method: "POST",
+        body: JSON.stringify({ email, password, code }),
+    });
+    await setToken(token);
+}
+
 export async function logout(): Promise<void> {
     await setToken(null);
 }
 
 export async function getDashboard(): Promise<DashboardData> {
-    if (MOCK) return MOCK_DASHBOARD;
+    if (MOCK) return structuredClone(MOCK_DASHBOARD);
     return request<DashboardData>("/api/dashboard");
+}
+
+export async function sendChat(messages: ChatMessage[]): Promise<string> {
+    if (MOCK) {
+        await new Promise((r) => setTimeout(r, 900));
+        return "Logged it — roughly 420 kcal, 18 g protein (estimated). Anything else?";
+    }
+    const { message } = await request<{ message: string }>("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ messages }),
+    });
+    return message;
+}
+
+// ----- manual editing -----
+
+export async function addMeal(fields: MealFields): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.meals.push({
+            id: `mock-${Date.now()}`,
+            meal_type: fields.meal_type,
+            description: fields.description,
+            calories: fields.calories ?? null,
+            protein_g: fields.protein_g ?? null,
+            carbs_g: fields.carbs_g ?? null,
+            fat_g: fields.fat_g ?? null,
+            logged_at: new Date().toISOString(),
+        });
+        return;
+    }
+    await request("/api/meals", {
+        method: "POST",
+        body: JSON.stringify(fields),
+    });
+}
+
+export async function patchMeal(
+    id: string,
+    fields: Partial<MealFields>,
+): Promise<void> {
+    if (MOCK) {
+        const m = MOCK_DASHBOARD.meals.find((x) => x.id === id);
+        if (m) Object.assign(m, fields);
+        return;
+    }
+    await request(`/api/meals/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(fields),
+    });
+}
+
+export async function removeMeal(id: string): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.meals = MOCK_DASHBOARD.meals.filter((m) => m.id !== id);
+        return;
+    }
+    await request(`/api/meals/${id}`, { method: "DELETE" });
+}
+
+export async function addWater(amountMl: number): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.water.total_ml += amountMl;
+        MOCK_DASHBOARD.water.entries.push({
+            id: `mock-${Date.now()}`,
+            amount_ml: amountMl,
+            logged_at: new Date().toISOString(),
+        });
+        return;
+    }
+    await request("/api/water", {
+        method: "POST",
+        body: JSON.stringify({ amount_ml: amountMl }),
+    });
+}
+
+export async function removeWater(id: string): Promise<void> {
+    if (MOCK) {
+        const e = MOCK_DASHBOARD.water.entries.find((x) => x.id === id);
+        if (e) MOCK_DASHBOARD.water.total_ml -= e.amount_ml;
+        MOCK_DASHBOARD.water.entries = MOCK_DASHBOARD.water.entries.filter(
+            (x) => x.id !== id,
+        );
+        return;
+    }
+    await request(`/api/water/${id}`, { method: "DELETE" });
+}
+
+export async function addWeight(kg: number): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.weight.current_g = Math.round(kg * 1000);
+        return;
+    }
+    await request("/api/weight", {
+        method: "POST",
+        body: JSON.stringify({ weight_kg: kg }),
+    });
+}
+
+export async function patchWeight(id: string, kg: number): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.weight.current_g = Math.round(kg * 1000);
+        return;
+    }
+    await request(`/api/weight/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ weight_kg: kg }),
+    });
+}
+
+export async function removeWeight(id: string): Promise<void> {
+    if (MOCK) return;
+    await request(`/api/weight/${id}`, { method: "DELETE" });
+}
+
+export async function saveGoals(goals: GoalsInput): Promise<void> {
+    if (MOCK) {
+        MOCK_DASHBOARD.calories.goal = goals.daily_calories;
+        MOCK_DASHBOARD.macros.protein.goal = goals.daily_protein_g;
+        MOCK_DASHBOARD.macros.carbs.goal = goals.daily_carbs_g;
+        MOCK_DASHBOARD.macros.fat.goal = goals.daily_fat_g;
+        MOCK_DASHBOARD.water.goal_ml = goals.daily_water_ml;
+        MOCK_DASHBOARD.weight.target_g =
+            goals.target_weight_kg == null
+                ? null
+                : Math.round(goals.target_weight_kg * 1000);
+        return;
+    }
+    await request("/api/goals", {
+        method: "PUT",
+        body: JSON.stringify(goals),
+    });
 }
 
 // ---------- Fixtures (mock mode) ----------
@@ -116,22 +307,29 @@ const MOCK_DASHBOARD: DashboardData = {
         goal_ml: 2500,
         // ponytail: 8 three-hour buckets, 00–24
         by_hour: [0, 0, 350, 250, 400, 200, 250, 0],
+        entries: [
+            { id: "w1", amount_ml: 350, logged_at: "2026-07-07T07:10:00Z" },
+            { id: "w2", amount_ml: 250, logged_at: "2026-07-07T09:40:00Z" },
+            { id: "w3", amount_ml: 400, logged_at: "2026-07-07T13:00:00Z" },
+            { id: "w4", amount_ml: 200, logged_at: "2026-07-07T16:20:00Z" },
+            { id: "w5", amount_ml: 250, logged_at: "2026-07-07T19:05:00Z" },
+        ],
     },
     weight: {
         current_g: 78200,
         target_g: 74000,
         series: [
-            { date: "2026-06-08", weight_g: 80100 },
-            { date: "2026-06-11", weight_g: 79800 },
-            { date: "2026-06-14", weight_g: 79900 },
-            { date: "2026-06-17", weight_g: 79400 },
-            { date: "2026-06-20", weight_g: 79100 },
-            { date: "2026-06-23", weight_g: 78900 },
-            { date: "2026-06-26", weight_g: 79000 },
-            { date: "2026-06-29", weight_g: 78600 },
-            { date: "2026-07-02", weight_g: 78400 },
-            { date: "2026-07-05", weight_g: 78300 },
-            { date: "2026-07-07", weight_g: 78200 },
+            { date: "2026-06-08", id: "g1", weight_g: 80100 },
+            { date: "2026-06-11", id: "g2", weight_g: 79800 },
+            { date: "2026-06-14", id: "g3", weight_g: 79900 },
+            { date: "2026-06-17", id: "g4", weight_g: 79400 },
+            { date: "2026-06-20", id: "g5", weight_g: 79100 },
+            { date: "2026-06-23", id: "g6", weight_g: 78900 },
+            { date: "2026-06-26", id: "g7", weight_g: 79000 },
+            { date: "2026-06-29", id: "g8", weight_g: 78600 },
+            { date: "2026-07-02", id: "g9", weight_g: 78400 },
+            { date: "2026-07-05", id: "g10", weight_g: 78300 },
+            { date: "2026-07-07", id: "g11", weight_g: 78200 },
         ],
     },
     meals: [
@@ -140,6 +338,9 @@ const MOCK_DASHBOARD: DashboardData = {
             meal_type: "breakfast",
             description: "Oatmeal with blueberries & almond butter",
             calories: 420,
+            protein_g: 14,
+            carbs_g: 58,
+            fat_g: 16,
             logged_at: "2026-07-07T07:40:00Z",
         },
         {
@@ -147,6 +348,9 @@ const MOCK_DASHBOARD: DashboardData = {
             meal_type: "lunch",
             description: "Grilled chicken bowl, brown rice, avocado",
             calories: 640,
+            protein_g: 46,
+            carbs_g: 62,
+            fat_g: 22,
             logged_at: "2026-07-07T12:15:00Z",
         },
         {
@@ -154,6 +358,9 @@ const MOCK_DASHBOARD: DashboardData = {
             meal_type: "snack",
             description: "Greek yogurt, honey, walnuts",
             calories: 230,
+            protein_g: 15,
+            carbs_g: 20,
+            fat_g: 9,
             logged_at: "2026-07-07T16:05:00Z",
         },
         {
@@ -161,6 +368,9 @@ const MOCK_DASHBOARD: DashboardData = {
             meal_type: "dinner",
             description: "Salmon, roasted vegetables",
             calories: 196,
+            protein_g: 21,
+            carbs_g: 12,
+            fat_g: 8,
             logged_at: "2026-07-07T19:30:00Z",
         },
     ],

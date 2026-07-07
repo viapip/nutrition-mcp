@@ -91,11 +91,12 @@ test("buildDashboard aggregates macros, water buckets and weight series", () => 
     expect(d.macros.carbs).toEqual({ eaten: 50, goal: null });
     expect(d.water.total_ml).toBe(500);
     expect(d.water.by_hour).toEqual([0, 0, 300, 0, 0, 0, 0, 200]);
+    expect(d.water.entries.map((e) => e.id)).toEqual(["w1", "w2"]);
     expect(d.weight.current_g).toBe(79900);
     expect(d.weight.target_g).toBe(74000);
     expect(d.weight.series).toEqual([
-        { date: "2026-07-05", weight_g: 81000 },
-        { date: "2026-07-07", weight_g: 79900 },
+        { date: "2026-07-05", id: "kg0", weight_g: 81000 },
+        { date: "2026-07-07", id: "kg2", weight_g: 79900 },
     ]);
     expect(d.meals).toHaveLength(2);
     expect(d.meals[0]).not.toHaveProperty("notes");
@@ -105,6 +106,7 @@ test("buildDashboard with no data and no goals is all zeros/nulls", () => {
     const d = buildDashboard("2026-07-07", "UTC", [], [], [], null, null);
     expect(d.calories).toEqual({ eaten: 0, goal: null });
     expect(d.water.by_hour).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(d.water.entries).toEqual([]);
     expect(d.weight).toEqual({ current_g: null, target_g: null, series: [] });
     expect(d.meals).toEqual([]);
 });

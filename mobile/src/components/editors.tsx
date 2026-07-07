@@ -1,0 +1,703 @@
+import { useState } from "react";
+import {
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    useColorScheme,
+    View,
+} from "react-native";
+
+import {
+    Colors,
+    Fonts,
+    MaxContentWidth,
+    Radii,
+    Spacing,
+    type Theme,
+} from "@/constants/theme";
+import {
+    addMeal,
+    addWeight,
+    patchMeal,
+    patchWeight,
+    removeMeal,
+    removeWeight,
+    saveGoals,
+    type GoalsInput,
+    type MealRow,
+    type MealType,
+} from "@/lib/api";
+
+const MEAL_TYPES: { key: MealType; label: string }[] = [
+    { key: "breakfast", label: "Breakfast" },
+    { key: "lunch", label: "Lunch" },
+    { key: "dinner", label: "Dinner" },
+    { key: "snack", label: "Snack" },
+];
+
+/** "" → null, "12,5" → 12.5, junk/≤0 → NaN (blocks save). */
+function parseNum(s: string): number | null {
+    const t = s.trim();
+    if (!t) return null;
+    const n = Number(t.replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? n : NaN;
+}
+
+function numText(v: number | null | undefined): string {
+    return v == null ? "" : String(v);
+}
+
+function useTheme(): Theme {
+    const scheme = useColorScheme();
+    return Colors[scheme === "dark" ? "dark" : "light"];
+}
+
+// ----- shared bottom sheet -----
+
+function Sheet({
+    visible,
+    title,
+    onClose,
+    children,
+    theme,
+}: {
+    visible: boolean;
+    title: string;
+    onClose: () => void;
+    children: React.ReactNode;
+    theme: Theme;
+}) {
+    return (
+        <Modal
+            visible={visible}
+            transparent
+            animationType="slide"
+            onRequestClose={onClose}
+        >
+            <KeyboardAvoidingView
+                style={styles.backdropWrap}
+                behavior={Platform.OS === "ios" ? "padding" : undefined}
+            >
+                <Pressable style={styles.backdrop} onPress={onClose} />
+                <View
+                    style={[
+                        styles.sheet,
+                        {
+                            backgroundColor: theme.surfaceElevated,
+                            borderColor: theme.hairline,
+                        },
+                    ]}
+                >
+                    <View
+                        style={[
+                            styles.grabber,
+                            { backgroundColor: theme.hairline },
+                        ]}
+                    />
+                    <Text style={[styles.sheetTitle, { color: theme.ink }]}>
+                        {title}
+                    </Text>
+                    {children}
+                </View>
+            </KeyboardAvoidingView>
+        </Modal>
+    );
+}
+
+function Field({
+    label,
+    value,
+    onChange,
+    theme,
+    keyboard = "default",
+    placeholder,
+}: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    theme: Theme;
+    keyboard?: "default" | "decimal-pad";
+    placeholder?: string;
+}) {
+    return (
+        <View style={styles.field}>
+            <Text style={[styles.fieldLabel, { color: theme.inkSecondary }]}>
+                {label}
+            </Text>
+            <TextInput
+                style={[
+                    styles.input,
+                    {
+                        backgroundColor: theme.surface,
+                        borderColor: theme.hairline,
+                        color: theme.ink,
+                    },
+                ]}
+                value={value}
+                onChangeText={onChange}
+                keyboardType={keyboard}
+                placeholder={placeholder}
+                placeholderTextColor={theme.inkMuted}
+            />
+        </View>
+    );
+}
+
+function SheetActions({
+    onSave,
+    onDelete,
+    busy,
+    theme,
+}: {
+    onSave: () => void;
+    onDelete?: () => void;
+    busy: boolean;
+    theme: Theme;
+}) {
+    return (
+        <View style={styles.actions}>
+            {onDelete && (
+                <Pressable
+                    accessibilityRole="button"
+                    onPress={onDelete}
+                    disabled={busy}
+                    style={[styles.deleteBtn, { borderColor: theme.danger }]}
+                >
+                    <Text style={[styles.deleteText, { color: theme.danger }]}>
+                        Delete
+                    </Text>
+                </Pressable>
+            )}
+            <Pressable
+                accessibilityRole="button"
+                onPress={onSave}
+                disabled={busy}
+                style={({ pressed }) => [
+                    styles.saveBtn,
+                    {
+                        backgroundColor: theme.accent,
+                        opacity: pressed || busy ? 0.85 : 1,
+                    },
+                ]}
+            >
+                <Text style={[styles.saveText, { color: theme.onAccent }]}>
+                    {busy ? "Saving…" : "Save"}
+                </Text>
+            </Pressable>
+        </View>
+    );
+}
+
+// ----- meal editor -----
+
+export function MealEditor({
+    visible,
+    meal,
+    onDone,
+    onClose,
+}: {
+    visible: boolean;
+    /** null = create a new meal */
+    meal: MealRow | null;
+    onDone: () => void;
+    onClose: () => void;
+}) {
+    const theme = useTheme();
+    return (
+        <Sheet
+            visible={visible}
+            title={meal ? "Edit meal" : "Add meal"}
+            onClose={onClose}
+            theme={theme}
+        >
+            {/* Remounts on every open, so state re-inits from props. */}
+            {visible && <MealForm meal={meal} onDone={onDone} theme={theme} />}
+        </Sheet>
+    );
+}
+
+function MealForm({
+    meal,
+    onDone,
+    theme,
+}: {
+    meal: MealRow | null;
+    onDone: () => void;
+    theme: Theme;
+}) {
+    const [description, setDescription] = useState(meal?.description ?? "");
+    const [mealType, setMealType] = useState<MealType>(
+        (meal?.meal_type as MealType) ?? "snack",
+    );
+    const [calories, setCalories] = useState(numText(meal?.calories));
+    const [protein, setProtein] = useState(numText(meal?.protein_g));
+    const [carbs, setCarbs] = useState(numText(meal?.carbs_g));
+    const [fat, setFat] = useState(numText(meal?.fat_g));
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(false);
+
+    const save = async () => {
+        const nums = {
+            calories: parseNum(calories),
+            protein_g: parseNum(protein),
+            carbs_g: parseNum(carbs),
+            fat_g: parseNum(fat),
+        };
+        if (
+            !description.trim() ||
+            Object.values(nums).some((v) => Number.isNaN(v))
+        ) {
+            setError(true);
+            return;
+        }
+        setBusy(true);
+        try {
+            const fields = {
+                description: description.trim(),
+                meal_type: mealType,
+                ...nums,
+            };
+            if (meal) await patchMeal(meal.id, fields);
+            else await addMeal(fields);
+            onDone();
+        } catch {
+            setError(true);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const del = async () => {
+        if (!meal) return;
+        setBusy(true);
+        try {
+            await removeMeal(meal.id);
+            onDone();
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <>
+            <Field
+                label="Description"
+                value={description}
+                onChange={setDescription}
+                theme={theme}
+                placeholder="What was on the plate?"
+            />
+            <View style={styles.typeRow}>
+                {MEAL_TYPES.map((t) => {
+                    const active = t.key === mealType;
+                    return (
+                        <Pressable
+                            key={t.key}
+                            accessibilityRole="button"
+                            onPress={() => setMealType(t.key)}
+                            style={[
+                                styles.typeChip,
+                                {
+                                    backgroundColor: active
+                                        ? theme.accent
+                                        : theme.surface,
+                                    borderColor: active
+                                        ? theme.accent
+                                        : theme.hairline,
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.typeChipText,
+                                    {
+                                        color: active
+                                            ? theme.onAccent
+                                            : theme.inkSecondary,
+                                    },
+                                ]}
+                            >
+                                {t.label}
+                            </Text>
+                        </Pressable>
+                    );
+                })}
+            </View>
+            <View style={styles.numRow}>
+                <View style={styles.numCell}>
+                    <Field
+                        label="kcal"
+                        value={calories}
+                        onChange={setCalories}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Protein g"
+                        value={protein}
+                        onChange={setProtein}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+            </View>
+            <View style={styles.numRow}>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Carbs g"
+                        value={carbs}
+                        onChange={setCarbs}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Fat g"
+                        value={fat}
+                        onChange={setFat}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+            </View>
+            {error && (
+                <Text style={[styles.error, { color: theme.danger }]}>
+                    Check the description and numbers, then try again.
+                </Text>
+            )}
+            <SheetActions
+                onSave={() => void save()}
+                onDelete={meal ? () => void del() : undefined}
+                busy={busy}
+                theme={theme}
+            />
+        </>
+    );
+}
+
+// ----- weight editor -----
+
+export function WeightEditor({
+    visible,
+    entry,
+    onDone,
+    onClose,
+}: {
+    visible: boolean;
+    /** null = log a new weigh-in */
+    entry: { id: string; weight_g: number } | null;
+    onDone: () => void;
+    onClose: () => void;
+}) {
+    const theme = useTheme();
+    return (
+        <Sheet
+            visible={visible}
+            title={entry ? "Edit weigh-in" : "Log weight"}
+            onClose={onClose}
+            theme={theme}
+        >
+            {visible && (
+                <WeightForm entry={entry} onDone={onDone} theme={theme} />
+            )}
+        </Sheet>
+    );
+}
+
+function WeightForm({
+    entry,
+    onDone,
+    theme,
+}: {
+    entry: { id: string; weight_g: number } | null;
+    onDone: () => void;
+    theme: Theme;
+}) {
+    const [kg, setKg] = useState(
+        entry ? (entry.weight_g / 1000).toFixed(1) : "",
+    );
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(false);
+
+    const save = async () => {
+        const v = parseNum(kg);
+        if (v == null || Number.isNaN(v)) {
+            setError(true);
+            return;
+        }
+        setBusy(true);
+        try {
+            if (entry) await patchWeight(entry.id, v);
+            else await addWeight(v);
+            onDone();
+        } catch {
+            setError(true);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const del = async () => {
+        if (!entry) return;
+        setBusy(true);
+        try {
+            await removeWeight(entry.id);
+            onDone();
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <>
+            <Field
+                label="Weight, kg"
+                value={kg}
+                onChange={setKg}
+                theme={theme}
+                keyboard="decimal-pad"
+                placeholder="78.2"
+            />
+            {error && (
+                <Text style={[styles.error, { color: theme.danger }]}>
+                    Enter a weight like 78.2.
+                </Text>
+            )}
+            <SheetActions
+                onSave={() => void save()}
+                onDelete={entry ? () => void del() : undefined}
+                busy={busy}
+                theme={theme}
+            />
+        </>
+    );
+}
+
+// ----- goals editor -----
+
+export function GoalsEditor({
+    visible,
+    initial,
+    onDone,
+    onClose,
+}: {
+    visible: boolean;
+    initial: GoalsInput;
+    onDone: () => void;
+    onClose: () => void;
+}) {
+    const theme = useTheme();
+    return (
+        <Sheet
+            visible={visible}
+            title="Daily goals"
+            onClose={onClose}
+            theme={theme}
+        >
+            {visible && (
+                <GoalsForm initial={initial} onDone={onDone} theme={theme} />
+            )}
+        </Sheet>
+    );
+}
+
+function GoalsForm({
+    initial,
+    onDone,
+    theme,
+}: {
+    initial: GoalsInput;
+    onDone: () => void;
+    theme: Theme;
+}) {
+    const [calories, setCalories] = useState(numText(initial.daily_calories));
+    const [protein, setProtein] = useState(numText(initial.daily_protein_g));
+    const [carbs, setCarbs] = useState(numText(initial.daily_carbs_g));
+    const [fat, setFat] = useState(numText(initial.daily_fat_g));
+    const [water, setWater] = useState(numText(initial.daily_water_ml));
+    const [target, setTarget] = useState(numText(initial.target_weight_kg));
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(false);
+
+    const save = async () => {
+        const goals: GoalsInput = {
+            daily_calories: parseNum(calories),
+            daily_protein_g: parseNum(protein),
+            daily_carbs_g: parseNum(carbs),
+            daily_fat_g: parseNum(fat),
+            daily_water_ml: parseNum(water),
+            target_weight_kg: parseNum(target),
+        };
+        if (Object.values(goals).some((v) => Number.isNaN(v))) {
+            setError(true);
+            return;
+        }
+        setBusy(true);
+        try {
+            await saveGoals(goals);
+            onDone();
+        } catch {
+            setError(true);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <>
+            <View style={styles.numRow}>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Calories"
+                        value={calories}
+                        onChange={setCalories}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Water, ml"
+                        value={water}
+                        onChange={setWater}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+            </View>
+            <View style={styles.numRow}>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Protein g"
+                        value={protein}
+                        onChange={setProtein}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Carbs g"
+                        value={carbs}
+                        onChange={setCarbs}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+            </View>
+            <View style={styles.numRow}>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Fat g"
+                        value={fat}
+                        onChange={setFat}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+                <View style={styles.numCell}>
+                    <Field
+                        label="Target weight, kg"
+                        value={target}
+                        onChange={setTarget}
+                        theme={theme}
+                        keyboard="decimal-pad"
+                    />
+                </View>
+            </View>
+            <Text style={[styles.hint, { color: theme.inkMuted }]}>
+                Leave a field empty to clear that goal.
+            </Text>
+            {error && (
+                <Text style={[styles.error, { color: theme.danger }]}>
+                    Numbers only — check the values and try again.
+                </Text>
+            )}
+            <SheetActions
+                onSave={() => void save()}
+                busy={busy}
+                theme={theme}
+            />
+        </>
+    );
+}
+
+const styles = StyleSheet.create({
+    backdropWrap: { flex: 1, justifyContent: "flex-end" },
+    backdrop: {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: "rgba(20, 22, 18, 0.45)",
+    },
+    sheet: {
+        width: "100%",
+        maxWidth: MaxContentWidth,
+        alignSelf: "center",
+        borderTopLeftRadius: Radii.lg,
+        borderTopRightRadius: Radii.lg,
+        borderWidth: 1,
+        padding: Spacing.lg,
+        paddingBottom: Spacing.xl,
+        gap: Spacing.md,
+    },
+    grabber: {
+        alignSelf: "center",
+        width: 40,
+        height: 4,
+        borderRadius: 2,
+        marginTop: -Spacing.sm,
+    },
+    sheetTitle: { fontFamily: Fonts.display, fontSize: 24 },
+    field: { gap: 6, flex: 1 },
+    fieldLabel: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    input: {
+        fontFamily: Fonts.sans,
+        fontSize: 16,
+        borderWidth: 1,
+        borderRadius: Radii.md,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 12,
+    },
+    typeRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },
+    typeChip: {
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 8,
+    },
+    typeChipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    numRow: { flexDirection: "row", gap: Spacing.md },
+    numCell: { flex: 1 },
+    hint: { fontFamily: Fonts.sans, fontSize: 12 },
+    error: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    actions: {
+        flexDirection: "row",
+        gap: Spacing.md,
+        marginTop: Spacing.sm,
+    },
+    deleteBtn: {
+        borderWidth: 1,
+        borderRadius: Radii.md,
+        paddingVertical: 14,
+        paddingHorizontal: Spacing.lg,
+        alignItems: "center",
+    },
+    deleteText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    saveBtn: {
+        flex: 1,
+        borderRadius: Radii.md,
+        paddingVertical: 14,
+        alignItems: "center",
+    },
+    saveText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+});

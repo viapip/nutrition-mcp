@@ -1,0 +1,584 @@
+import * as ImagePicker from "expo-image-picker";
+import { router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
+import {
+    Alert,
+    Animated,
+    Image,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    useColorScheme,
+    View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import {
+    Colors,
+    Fonts,
+    MaxContentWidth,
+    Radii,
+    Spacing,
+    type Theme,
+} from "@/constants/theme";
+import { sendChat, type ChatMessage, type ChatPart } from "@/lib/api";
+
+const SUGGESTIONS = [
+    "I had a bowl of oatmeal with berries",
+    "Log 300 ml of water",
+    "How am I doing today?",
+];
+
+function messageText(m: ChatMessage): string {
+    if (typeof m.content === "string") return m.content;
+    return m.content
+        .filter(
+            (p): p is Extract<ChatPart, { type: "text" }> => p.type === "text",
+        )
+        .map((p) => p.text)
+        .join(" ");
+}
+
+function messageImage(m: ChatMessage): string | null {
+    if (typeof m.content === "string") return null;
+    const img = m.content.find(
+        (p): p is Extract<ChatPart, { type: "image_url" }> =>
+            p.type === "image_url",
+    );
+    return img?.image_url.url ?? null;
+}
+
+/**
+ * Keep only the newest photo in the request payload: older images are
+ * replaced with a text stub so history stays under the server's size caps
+ * while the model still knows a photo was there.
+ */
+function slimHistory(messages: ChatMessage[]): ChatMessage[] {
+    const lastWithImage = messages.findLastIndex(
+        (m) => messageImage(m) != null,
+    );
+    return messages.map((m, i) => {
+        if (i === lastWithImage || typeof m.content === "string") return m;
+        const text = messageText(m);
+        return {
+            role: m.role,
+            content: messageImage(m) ? `[photo of food] ${text}`.trim() : text,
+        };
+    });
+}
+
+function TypingDots({ theme }: { theme: Theme }) {
+    // useState, not useRef: reading a ref during render trips react-hooks/refs
+    const [pulse] = useState(() => new Animated.Value(0));
+    useEffect(() => {
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(pulse, {
+                    toValue: 1,
+                    duration: 500,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(pulse, {
+                    toValue: 0,
+                    duration: 500,
+                    useNativeDriver: true,
+                }),
+            ]),
+        );
+        loop.start();
+        return () => loop.stop();
+    }, [pulse]);
+
+    return (
+        <View style={styles.dotsRow}>
+            {[0, 1, 2].map((i) => (
+                <Animated.View
+                    key={i}
+                    style={[
+                        styles.dot,
+                        {
+                            backgroundColor: theme.inkMuted,
+                            opacity: pulse.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: i === 1 ? [0.9, 0.3] : [0.3, 0.9],
+                            }),
+                        },
+                    ]}
+                />
+            ))}
+        </View>
+    );
+}
+
+export default function ChatScreen() {
+    const scheme = useColorScheme();
+    const theme = Colors[scheme === "dark" ? "dark" : "light"];
+
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [input, setInput] = useState("");
+    const [pendingImage, setPendingImage] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const scrollRef = useRef<ScrollView>(null);
+
+    const pickImage = async (fromCamera: boolean) => {
+        const perm = fromCamera
+            ? await ImagePicker.requestCameraPermissionsAsync()
+            : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) return;
+        const result = fromCamera
+            ? await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["images"],
+                  quality: 0.4,
+                  base64: true,
+              })
+            : await ImagePicker.launchImageLibraryAsync({
+                  mediaTypes: ["images"],
+                  quality: 0.4,
+                  base64: true,
+              });
+        const asset = result.assets?.[0];
+        if (result.canceled || !asset?.base64) return;
+        setPendingImage(`data:image/jpeg;base64,${asset.base64}`);
+    };
+
+    const attach = () => {
+        if (Platform.OS === "web") {
+            void pickImage(false);
+            return;
+        }
+        Alert.alert("Add a photo", undefined, [
+            { text: "Camera", onPress: () => void pickImage(true) },
+            { text: "Photo library", onPress: () => void pickImage(false) },
+            { text: "Cancel", style: "cancel" },
+        ]);
+    };
+
+    const send = async (textOverride?: string) => {
+        const text = (textOverride ?? input).trim();
+        if ((!text && !pendingImage) || busy) return;
+
+        const content: ChatMessage["content"] = pendingImage
+            ? ([
+                  { type: "image_url", image_url: { url: pendingImage } },
+                  ...(text ? [{ type: "text", text } as ChatPart] : []),
+              ] as ChatPart[])
+            : text;
+        const next = [...messages, { role: "user" as const, content }];
+        setMessages(next);
+        setInput("");
+        setPendingImage(null);
+        setBusy(true);
+        try {
+            const reply = await sendChat(slimHistory(next));
+            setMessages([...next, { role: "assistant", content: reply }]);
+        } catch {
+            setMessages([
+                ...next,
+                {
+                    role: "assistant",
+                    content: "That didn't go through — try again.",
+                },
+            ]);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
+            <KeyboardAvoidingView
+                style={styles.flex}
+                behavior={Platform.OS === "ios" ? "padding" : undefined}
+            >
+                <View style={styles.wrap}>
+                    {/* Header */}
+                    <View style={styles.header}>
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Back to dashboard"
+                            onPress={() => router.back()}
+                            hitSlop={12}
+                        >
+                            <Text
+                                style={[styles.back, { color: theme.accent }]}
+                            >
+                                ← Today
+                            </Text>
+                        </Pressable>
+                        <Text
+                            style={[styles.headerTitle, { color: theme.ink }]}
+                        >
+                            Assistant
+                        </Text>
+                        {/* spacer to balance the back button */}
+                        <View style={styles.headerSpacer} />
+                    </View>
+
+                    <ScrollView
+                        ref={scrollRef}
+                        style={styles.flex}
+                        contentContainerStyle={styles.messages}
+                        onContentSizeChange={() =>
+                            scrollRef.current?.scrollToEnd({ animated: true })
+                        }
+                    >
+                        {messages.length === 0 && (
+                            <View style={styles.empty}>
+                                <Text
+                                    style={[
+                                        styles.emptyTitle,
+                                        { color: theme.ink },
+                                    ]}
+                                >
+                                    Tell me{"\n"}
+                                    <Text
+                                        style={[
+                                            styles.emptyItalic,
+                                            { color: theme.accent },
+                                        ]}
+                                    >
+                                        what you ate.
+                                    </Text>
+                                </Text>
+                                <Text
+                                    style={[
+                                        styles.emptyHint,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    {
+                                        "Type it, or snap a photo of the plate — I'll estimate and log it."
+                                    }
+                                </Text>
+                                <View style={styles.chips}>
+                                    {SUGGESTIONS.map((s) => (
+                                        <Pressable
+                                            key={s}
+                                            accessibilityRole="button"
+                                            onPress={() => void send(s)}
+                                            style={[
+                                                styles.chip,
+                                                {
+                                                    backgroundColor:
+                                                        theme.surfaceElevated,
+                                                    borderColor: theme.hairline,
+                                                },
+                                            ]}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.chipText,
+                                                    {
+                                                        color: theme.inkSecondary,
+                                                    },
+                                                ]}
+                                            >
+                                                {s}
+                                            </Text>
+                                        </Pressable>
+                                    ))}
+                                </View>
+                            </View>
+                        )}
+
+                        {messages.map((m, i) => {
+                            const mine = m.role === "user";
+                            const image = messageImage(m);
+                            const text = messageText(m);
+                            return (
+                                <View
+                                    key={i}
+                                    style={[
+                                        styles.bubble,
+                                        mine
+                                            ? [
+                                                  styles.bubbleMine,
+                                                  {
+                                                      backgroundColor:
+                                                          theme.accent,
+                                                  },
+                                              ]
+                                            : [
+                                                  styles.bubbleTheirs,
+                                                  {
+                                                      backgroundColor:
+                                                          theme.surfaceElevated,
+                                                      borderColor:
+                                                          theme.hairline,
+                                                  },
+                                              ],
+                                    ]}
+                                >
+                                    {image && (
+                                        <Image
+                                            source={{ uri: image }}
+                                            style={styles.bubbleImage}
+                                        />
+                                    )}
+                                    {!!text && (
+                                        <Text
+                                            style={[
+                                                styles.bubbleText,
+                                                {
+                                                    color: mine
+                                                        ? theme.onAccent
+                                                        : theme.ink,
+                                                },
+                                            ]}
+                                        >
+                                            {text}
+                                        </Text>
+                                    )}
+                                </View>
+                            );
+                        })}
+
+                        {busy && (
+                            <View
+                                style={[
+                                    styles.bubble,
+                                    styles.bubbleTheirs,
+                                    {
+                                        backgroundColor: theme.surfaceElevated,
+                                        borderColor: theme.hairline,
+                                    },
+                                ]}
+                            >
+                                <TypingDots theme={theme} />
+                            </View>
+                        )}
+                    </ScrollView>
+
+                    {/* Pending photo preview */}
+                    {pendingImage && (
+                        <View style={styles.preview}>
+                            <Image
+                                source={{ uri: pendingImage }}
+                                style={[
+                                    styles.previewImage,
+                                    { borderColor: theme.hairline },
+                                ]}
+                            />
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Remove photo"
+                                onPress={() => setPendingImage(null)}
+                                style={[
+                                    styles.previewRemove,
+                                    { backgroundColor: theme.ink },
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.previewRemoveText,
+                                        { color: theme.surface },
+                                    ]}
+                                >
+                                    ×
+                                </Text>
+                            </Pressable>
+                        </View>
+                    )}
+
+                    {/* Input bar */}
+                    <View
+                        style={[
+                            styles.inputBar,
+                            { borderTopColor: theme.hairline },
+                        ]}
+                    >
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Attach a photo"
+                            onPress={attach}
+                            style={[
+                                styles.attach,
+                                {
+                                    backgroundColor: theme.surfaceElevated,
+                                    borderColor: theme.hairline,
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.attachIcon,
+                                    { color: theme.inkSecondary },
+                                ]}
+                            >
+                                ✚
+                            </Text>
+                        </Pressable>
+                        <TextInput
+                            style={[
+                                styles.input,
+                                {
+                                    backgroundColor: theme.surfaceElevated,
+                                    borderColor: theme.hairline,
+                                    color: theme.ink,
+                                },
+                            ]}
+                            placeholder="A plate, a snack, a weigh-in…"
+                            placeholderTextColor={theme.inkMuted}
+                            value={input}
+                            onChangeText={setInput}
+                            onSubmitEditing={() => void send()}
+                            multiline
+                        />
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Send"
+                            onPress={() => void send()}
+                            disabled={busy || (!input.trim() && !pendingImage)}
+                            style={({ pressed }) => [
+                                styles.send,
+                                {
+                                    backgroundColor: theme.accent,
+                                    opacity:
+                                        pressed ||
+                                        busy ||
+                                        (!input.trim() && !pendingImage)
+                                            ? 0.5
+                                            : 1,
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.sendIcon,
+                                    { color: theme.onAccent },
+                                ]}
+                            >
+                                ↑
+                            </Text>
+                        </Pressable>
+                    </View>
+                </View>
+            </KeyboardAvoidingView>
+        </SafeAreaView>
+    );
+}
+
+const styles = StyleSheet.create({
+    safe: { flex: 1 },
+    flex: { flex: 1 },
+    wrap: {
+        flex: 1,
+        width: "100%",
+        maxWidth: MaxContentWidth,
+        alignSelf: "center",
+    },
+    header: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: Spacing.lg,
+        paddingVertical: Spacing.sm,
+    },
+    back: { fontFamily: Fonts.sansMedium, fontSize: 15 },
+    headerTitle: { fontFamily: Fonts.display, fontSize: 20 },
+    headerSpacer: { width: 56 },
+    messages: {
+        paddingHorizontal: Spacing.lg,
+        paddingVertical: Spacing.md,
+        gap: Spacing.sm,
+    },
+    empty: { paddingTop: Spacing.xxl, gap: Spacing.md },
+    emptyTitle: {
+        fontFamily: Fonts.display,
+        fontSize: 36,
+        lineHeight: 42,
+    },
+    emptyItalic: { fontFamily: Fonts.displayLight },
+    emptyHint: { fontFamily: Fonts.sans, fontSize: 14, lineHeight: 20 },
+    chips: { gap: Spacing.sm, marginTop: Spacing.sm },
+    chip: {
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 10,
+        alignSelf: "flex-start",
+    },
+    chipText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
+    bubble: {
+        maxWidth: "85%",
+        borderRadius: Radii.lg,
+        padding: Spacing.md,
+        gap: Spacing.sm,
+    },
+    bubbleMine: { alignSelf: "flex-end", borderBottomRightRadius: Radii.sm },
+    bubbleTheirs: {
+        alignSelf: "flex-start",
+        borderWidth: 1,
+        borderBottomLeftRadius: Radii.sm,
+    },
+    bubbleText: { fontFamily: Fonts.sans, fontSize: 15, lineHeight: 21 },
+    bubbleImage: {
+        width: 200,
+        height: 200,
+        borderRadius: Radii.md,
+    },
+    dotsRow: { flexDirection: "row", gap: 5, paddingVertical: 4 },
+    dot: { width: 7, height: 7, borderRadius: 4 },
+    preview: {
+        paddingHorizontal: Spacing.lg,
+        paddingBottom: Spacing.sm,
+        alignSelf: "flex-start",
+    },
+    previewImage: {
+        width: 72,
+        height: 72,
+        borderRadius: Radii.md,
+        borderWidth: 1,
+    },
+    previewRemove: {
+        position: "absolute",
+        top: -6,
+        right: Spacing.lg - 6,
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    previewRemoveText: { fontSize: 14, lineHeight: 16 },
+    inputBar: {
+        flexDirection: "row",
+        alignItems: "flex-end",
+        gap: Spacing.sm,
+        borderTopWidth: 1,
+        paddingHorizontal: Spacing.lg,
+        paddingTop: Spacing.sm,
+        paddingBottom: Spacing.sm,
+    },
+    attach: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    attachIcon: { fontSize: 18 },
+    input: {
+        flex: 1,
+        fontFamily: Fonts.sans,
+        fontSize: 15,
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 11,
+        maxHeight: 120,
+    },
+    send: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    sendIcon: { fontFamily: Fonts.sansSemiBold, fontSize: 20 },
+});
