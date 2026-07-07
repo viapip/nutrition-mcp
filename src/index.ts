@@ -5,7 +5,7 @@ import { createOAuthRouter } from "./oauth.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { handleMcp } from "./mcp.js";
 import { startExportCleanup } from "./export.js";
-import { getLandingStats, type LandingStats } from "./supabase.js";
+import { getLandingStats, getMealExportCsv, type LandingStats } from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { maskIp } from "./net.js";
 
@@ -119,6 +119,18 @@ app.route("/", createOAuthRouter());
 // MCP endpoint (protected)
 app.all("/mcp", authenticateBearer, rateLimit, handleMcp);
 
+// Meal CSV export downloads. The unguessable token minted by the export_meals
+// tool is the only credential; expired or unknown tokens get a plain 404.
+app.get("/exports/:token/meals.csv", async (c) => {
+    const csv = await getMealExportCsv(c.req.param("token"));
+    if (csv == null) return c.text("Not found", 404);
+    return c.body(csv, 200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="meals.csv"',
+        "Cache-Control": "no-store",
+    });
+});
+
 // Aggregate landing-page stats, cached in-memory so page views don't each hit
 // the DB. The numbers move slowly, so a stale value for a few minutes is fine.
 const STATS_TTL_MS = 5 * 60 * 1000;
@@ -222,6 +234,13 @@ app.onError((_err, c) => {
 const port = parseInt(process.env.PORT || "8080");
 
 console.log(`Nutrition MCP server listening on 0.0.0.0:${port}`);
+
+if (!process.env.BASE_URL) {
+    console.warn(
+        "BASE_URL is not set — CSV export links will point at localhost " +
+            "and be unusable for remote clients.",
+    );
+}
 
 // Periodically delete expired meal-export files from the storage bucket.
 startExportCleanup();

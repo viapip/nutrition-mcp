@@ -26,11 +26,11 @@ Read the story behind it: [How I Replaced MyFitnessPal and Other Apps with a Sin
 
 ## Tech Stack
 
-- **Bun** — runtime and package manager
+- **Bun** — runtime and package manager (`Bun.sql`, `Bun.password`)
 - **Hono** — HTTP framework
 - **MCP SDK** — Model Context Protocol over Streamable HTTP
-- **Supabase** — PostgreSQL database + user authentication
-- **OAuth 2.0** — authentication for Claude.ai connectors
+- **PostgreSQL** — database, self-hosted via docker-compose
+- **OAuth 2.0** — authentication for Claude.ai connectors (email/password + Google)
 
 ## MCP Tools
 
@@ -75,27 +75,31 @@ Read the story behind it: [How I Replaced MyFitnessPal and Other Apps with a Sin
 
 ## Self-hosting
 
-### 1. Supabase setup
+### 1. docker-compose
 
-1. Create a [Supabase](https://supabase.com) project.
-2. Enable **Email Auth** (Authentication → Providers → Email) and disable email confirmation.
-3. Apply the schema. The full schema lives in [`supabase/migrations/`](supabase/migrations/). With the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started):
+The stack is two containers: the app and an official `postgres` image. The
+schema in [`db/init/001_schema.sql`](db/init/001_schema.sql) is applied
+automatically on the first start (empty volume).
 
-    ```bash
-    supabase link --project-ref <your-project-ref>
-    supabase db push
-    ```
+```bash
+cp .env.example .env   # set POSTGRES_PASSWORD, BASE_URL, OAuth credentials
+docker compose up -d
+curl -f http://localhost:8080/health   # → ok
+```
 
-    This creates every table, index, RLS policy, and foreign key the app needs. No local Postgres is involved — migrations run against your hosted project.
+Postgres data lives in the named `pgdata` volume; the app starts only after
+the database reports healthy.
 
-4. Copy the **service role key** from Project Settings → API and use it as `SUPABASE_SECRET_KEY`.
+> Migrating an existing Supabase deployment? See
+> [`docs/migrate-from-supabase.md`](docs/migrate-from-supabase.md).
 
 ### 2. Environment variables
 
 | Variable               | Description                                                                   |
 | ---------------------- | ----------------------------------------------------------------------------- |
-| `SUPABASE_URL`         | Your Supabase project URL                                                     |
-| `SUPABASE_SECRET_KEY`  | Supabase service role key (bypasses RLS)                                      |
+| `POSTGRES_PASSWORD`    | Password for the compose-managed Postgres (feeds the app's `DATABASE_URL`)    |
+| `DATABASE_URL`         | Postgres connection string — only needed when running outside docker compose  |
+| `BASE_URL`             | Public origin of the server; used for absolute CSV-export links               |
 | `OAUTH_CLIENT_ID`      | Random string for OAuth client identification                                 |
 | `OAUTH_CLIENT_SECRET`  | Random string for OAuth client authentication                                 |
 | `GOOGLE_CLIENT_ID`     | _(optional)_ Google OAuth client ID for "Sign in with Google"                 |
@@ -116,14 +120,14 @@ openssl rand -hex 32   # use as OAUTH_CLIENT_SECRET
 
 Email/password works out of the box. To also offer **"Continue with Google"**,
 follow [`docs/google-auth-setup.md`](docs/google-auth-setup.md) to create a
-Google OAuth client, enable the Google provider in Supabase, and set
-`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+Google OAuth client and set `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 
 ## Development
 
 ```bash
 bun install
-cp .env.example .env   # fill in your credentials
+cp .env.example .env    # fill in your credentials, uncomment DATABASE_URL
+docker compose up -d postgres   # or point DATABASE_URL at any Postgres
 bun run dev             # starts with hot reload on http://localhost:8080
 ```
 
@@ -149,16 +153,21 @@ bun run dev             # starts with hot reload on http://localhost:8080
 | `POST /approve`                               | Login/register handler                 |
 | `POST /token`                                 | Token exchange                         |
 | `GET /favicon.ico`                            | Server icon                            |
+| `GET /exports/:token/meals.csv`               | CSV export download (60-minute token)  |
 | `ALL /mcp`                                    | MCP endpoint (authenticated)           |
 
 ## Deploy
 
-The project includes a `Dockerfile` for container-based deployment.
+Any host that can run docker compose works:
 
-1. Push your repo to a hosting provider (e.g. DigitalOcean App Platform)
-2. Set the environment variables listed above
-3. The app auto-detects the Dockerfile and deploys on port `8080`
-4. Point your domain to the deployed URL
+1. Copy the repo (or just `docker-compose.yml`, `Dockerfile`, `db/`) to the server
+2. Fill in `.env` (see the table above)
+3. `docker compose up -d` — the app listens on port `8080`
+4. Point your domain / reverse proxy at it and set `BASE_URL` accordingly
+
+The standalone `Dockerfile` also still works for platforms that build
+containers themselves (e.g. DigitalOcean App Platform) — provide an external
+`DATABASE_URL` in that case.
 
 ## License
 

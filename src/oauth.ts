@@ -10,8 +10,9 @@ import {
     storeRefreshToken,
     consumeRefreshToken,
     registerClient,
-} from "./supabase.js";
+} from "./db.js";
 import { getBaseUrl } from "./url.js";
+import { checkRateLimit } from "./rate-limit.js";
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
@@ -46,6 +47,26 @@ function base64URLEncode(buffer: Buffer): string {
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=/g, "");
+}
+
+// Brute-force guard for the credential endpoints (Supabase Auth used to
+// provide this for free). Two sliding windows from rate-limit.ts — per client
+// IP and per target email — so neither rotating IPs (single-account attack)
+// nor rotating emails (spray from one host) bypasses the limit. XFF is
+// trustworthy only because the deployment sits behind a proxy that sets it
+// (same assumption as the /mcp rate limiter); exposed directly, the header is
+// client-controlled and only the email bucket still holds.
+function loginRateLimited(c: Context, email?: string): boolean {
+    const ip =
+        c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    if (!checkRateLimit(`login:ip:${ip}`).allowed) return true;
+    if (
+        email &&
+        !checkRateLimit(`login:email:${email.toLowerCase()}`).allowed
+    ) {
+        return true;
+    }
+    return false;
 }
 
 function escapeHtml(str: string): string {
@@ -169,6 +190,10 @@ export function createOAuthRouter() {
         const password = body.password as string;
         const action = body.action as string;
 
+        if (loginRateLimited(c, email)) {
+            return c.json({ error: "rate_limited" }, 429);
+        }
+
         if (!sessionId || !email || !password) {
             return c.json({ error: "invalid_request" }, 400);
         }
@@ -197,9 +222,8 @@ export function createOAuthRouter() {
     });
 
     // Google sign-in — step 1: redirect the user to Google's consent screen.
-    // We run the Google OAuth dance ourselves (rather than Supabase's PKCE
-    // redirect flow) so nothing needs to persist across requests beyond the
-    // existing in-memory session.
+    // We run the Google OAuth dance ourselves so nothing needs to persist
+    // across requests beyond the existing in-memory session.
     oauth.get("/authorize/google", async (c) => {
         const googleClientId = process.env.GOOGLE_CLIENT_ID;
         const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -219,8 +243,9 @@ export function createOAuthRouter() {
             return c.json({ error: "session_expired" }, 400);
         }
 
-        // Fresh nonce per attempt. Supabase expects the SHA-256 *hex* digest sent
-        // to the provider and the raw value handed to signInWithIdToken.
+        // Fresh nonce per attempt. The SHA-256 *hex* digest goes to Google and
+        // the raw value is handed to signInWithGoogleIdToken on callback,
+        // which recomputes the digest and compares it to the token's nonce.
         const rawNonce = crypto.randomUUID();
         const hashedNonce = crypto
             .createHash("sha256")
@@ -246,9 +271,14 @@ export function createOAuthRouter() {
     });
 
     // Google sign-in — step 2: Google redirects back here. Exchange the code for
-    // an ID token (back-channel), trade it with Supabase for a user, then mint
-    // our authorization code exactly like the password path.
+    // an ID token (back-channel), verify it against Google's JWKS and resolve
+    // it to a user, then mint our authorization code exactly like the password
+    // path.
     oauth.get("/auth/google/callback", async (c) => {
+        if (loginRateLimited(c)) {
+            return c.json({ error: "rate_limited" }, 429);
+        }
+
         const sessionId = c.req.query("state");
         if (!sessionId) {
             return c.json({ error: "invalid_request" }, 400);

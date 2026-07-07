@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { computeWeightTrend } from "./insights.js";
-import type { WeightEntry } from "./supabase.js";
+import type { WeightEntry } from "./db.js";
 
 function entry(logged_at: string, weight_g: number): WeightEntry {
     return {

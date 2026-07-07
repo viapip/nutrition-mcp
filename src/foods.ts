@@ -7,7 +7,7 @@
 // back to LLM estimation, so the lookup is always additive, never a hard
 // dependency for logging a meal.
 
-import { getSupabase } from "./supabase.js";
+import { getFoodCacheRow, putFoodCacheRow } from "./db.js";
 
 const OFF_PRODUCT_URL = "https://world.openfoodfacts.org/api/v2/product";
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -132,9 +132,9 @@ export async function fetchProductFromOFF(
 }
 
 // ---------- Cache ----------
-// All cache access is best-effort: any failure (missing table, no Supabase
-// config, transient error) is swallowed and treated as a miss so a cache
-// problem can never break a lookup.
+// All cache access is best-effort: any failure (missing table, no DB config,
+// transient error) is swallowed and treated as a miss so a cache problem can
+// never break a lookup.
 
 async function getCachedFood(
     source: string,
@@ -142,16 +142,11 @@ async function getCachedFood(
     ttlMs: number,
 ): Promise<FoodResult | null> {
     try {
-        const { data, error } = await getSupabase()
-            .from("food_cache")
-            .select("payload, fetched_at")
-            .eq("source", source)
-            .eq("source_id", sourceId)
-            .maybeSingle();
-        if (error || !data) return null;
-        const ageMs = Date.now() - new Date(data.fetched_at).getTime();
+        const row = await getFoodCacheRow(source, sourceId);
+        if (!row) return null;
+        const ageMs = Date.now() - new Date(row.fetched_at).getTime();
         if (ageMs > ttlMs) return null;
-        return data.payload as FoodResult;
+        return row.payload as FoodResult;
     } catch {
         return null;
     }
@@ -163,15 +158,7 @@ async function putCachedFood(
     payload: FoodResult,
 ): Promise<void> {
     try {
-        await getSupabase().from("food_cache").upsert(
-            {
-                source,
-                source_id: sourceId,
-                payload,
-                fetched_at: new Date().toISOString(),
-            },
-            { onConflict: "source,source_id" },
-        );
+        await putFoodCacheRow(source, sourceId, payload);
     } catch {
         // best-effort; ignore
     }

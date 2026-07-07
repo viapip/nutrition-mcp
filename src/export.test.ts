@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { buildMealsCsv } from "./export.js";
-import type { Meal } from "./supabase.js";
+import { buildMealsCsv, exportMeals } from "./export.js";
+import { setSqlForTests, type Meal } from "./db.js";
 
 function meal(overrides: Partial<Meal> = {}): Meal {
     return {
@@ -72,4 +72,21 @@ test("quotes and escapes fields containing commas, quotes, and newlines", () => 
     const row = csv.split("\n").slice(1).join("\n");
     expect(row).toContain('"Salad, ""the big one"""');
     expect(row).toContain('"line1\nline2"');
+});
+
+test("exportMeals fails fast on a malformed BASE_URL, before any DB work", async () => {
+    const prev = process.env.BASE_URL;
+    process.env.BASE_URL = "your-domain.com"; // missing scheme
+    // Any DB call would blow up loudly — none is expected.
+    setSqlForTests(() => {
+        throw new Error("db should not be touched");
+    });
+    try {
+        expect(exportMeals("user-1")).rejects.toThrow(
+            "BASE_URL must start with http:// or https://",
+        );
+    } finally {
+        if (prev === undefined) delete process.env.BASE_URL;
+        else process.env.BASE_URL = prev;
+    }
 });

@@ -36,3 +36,4 @@ supabase/.branches/
 
 # Finder (MacOS) folder config
 .DS_Store
+.codex-session/

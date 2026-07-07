@@ -1,5 +1,5 @@
 import type { Context, Next } from "hono";
-import { getUserIdByToken } from "./supabase.js";
+import { getUserIdByToken } from "./db.js";
 import { checkRateLimit } from "./rate-limit.js";
 
 function getBaseUrl(c: Context): string {

@@ -59,9 +59,9 @@
                     <p>
                         When you register, we store your
                         <strong>email address</strong> and a securely hashed
-                        password via Supabase Auth. When you use the service, we
-                        store your <strong>meal logs</strong> (description, meal
-                        type, calories, macros, notes, and timestamps).
+                        password. When you use the service, we store your
+                        <strong>meal logs</strong> (description, meal type,
+                        calories, macros, notes, and timestamps).
                     </p>
                 </div>
 
@@ -78,15 +78,10 @@
                 <div class="legal-section">
                     <h2 class="legal-heading">Where it's stored</h2>
                     <p>
-                        All data is stored in
-                        <a
-                            href="https://supabase.com"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            >Supabase</a
-                        >
-                        (PostgreSQL). Authentication is handled by Supabase
-                        Auth. The server is hosted on DigitalOcean.
+                        All data is stored in a PostgreSQL database operated
+                        alongside the server. Authentication is handled by the
+                        server itself; passwords are stored only as salted
+                        hashes. The server is hosted on DigitalOcean.
                     </p>
                 </div>
 

@@ -1,13 +1,13 @@
 import {
-    getSupabase,
     getAllMeals,
     getUserTimezone,
+    createMealExport,
+    sweepExpiredMealExports,
     type Meal,
-} from "./supabase.js";
+} from "./db.js";
 import { formatLocalDateTime } from "./tz.js";
 
-const EXPORT_BUCKET = "exports";
-// Signed link lifetime. The cleanup sweep ages files out on the same horizon.
+// Download-link lifetime. The cleanup sweep ages rows out on the same horizon.
 const EXPORT_TTL_SECONDS = 60 * 60; // 60 minutes
 const SWEEP_INTERVAL_MS = 10 * 60 * 1000; // every 10 minutes
 
@@ -60,96 +60,67 @@ export function buildMealsCsv(meals: Meal[], tz: string): string {
     return rows.join("\n");
 }
 
+// Public origin for building the absolute download link (the export tool has
+// no request context to derive it from). Falls back to localhost for dev.
+function publicBaseUrl(): string {
+    const configured = process.env.BASE_URL;
+    if (configured) {
+        if (!/^https?:\/\//.test(configured)) {
+            throw new Error(
+                `BASE_URL must start with http:// or https:// (got "${configured}")`,
+            );
+        }
+        return configured.replace(/\/+$/, "");
+    }
+    return `http://localhost:${process.env.PORT || "8080"}`;
+}
+
 export interface MealsExportResult {
     count: number;
     url?: string;
 }
 
 /**
- * Generate a CSV of all the user's meals, upload it to the private `exports`
- * bucket under a fixed per-user path (so each export overwrites the previous
- * one), and return a signed download link valid for EXPORT_TTL_SECONDS.
+ * Generate a CSV of all the user's meals, store it in the `meal_exports` table
+ * under a fresh random token (replacing the user's previous export), and
+ * return a download link valid for EXPORT_TTL_SECONDS.
  */
 export async function exportMeals(userId: string): Promise<MealsExportResult> {
+    // Resolve first so a misconfigured BASE_URL fails before any DB work.
+    const baseUrl = publicBaseUrl();
+
     const meals = await getAllMeals(userId);
     if (meals.length === 0) return { count: 0 };
 
     const tz = await getUserTimezone(userId);
     const csv = buildMealsCsv(meals, tz);
-    const path = `${userId}/meals.csv`;
+    const token = crypto.randomUUID();
 
-    const storage = getSupabase().storage.from(EXPORT_BUCKET);
+    await createMealExport(token, userId, csv, EXPORT_TTL_SECONDS);
 
-    const { error: uploadErr } = await storage.upload(path, csv, {
-        contentType: "text/csv",
-        upsert: true,
-    });
-    if (uploadErr)
-        throw new Error(`Failed to upload export: ${uploadErr.message}`);
-
-    const { data, error: signErr } = await storage.createSignedUrl(
-        path,
-        EXPORT_TTL_SECONDS,
-    );
-    if (signErr || !data)
-        throw new Error(
-            `Failed to create download link: ${signErr?.message ?? "unknown error"}`,
-        );
-
-    return { count: meals.length, url: data.signedUrl };
+    return {
+        count: meals.length,
+        url: `${baseUrl}/exports/${token}/meals.csv`,
+    };
 }
 
 /**
- * Delete export files older than the link TTL. Runs as a background sweep so no
- * export file outlives its signed URL by more than one sweep interval, even
- * across server restarts and for users who never export again.
+ * Delete export rows past their expiry. Runs as a background sweep so no
+ * export outlives its link by more than one sweep interval, even across
+ * server restarts and for users who never export again.
  */
 export async function sweepStaleExports(): Promise<void> {
-    const storage = getSupabase().storage.from(EXPORT_BUCKET);
-    const cutoff = Date.now() - EXPORT_TTL_SECONDS * 1000;
-
-    // Files live under per-user folders, so list the root to enumerate folders,
-    // then list each folder to reach the files (with their timestamps).
-    const { data: folders, error: rootErr } = await storage.list("", {
-        limit: 1000,
-    });
-    if (rootErr) {
-        console.warn("Export sweep: failed to list bucket:", rootErr.message);
-        return;
-    }
-    if (!folders) return;
-
-    const stalePaths: string[] = [];
-    for (const folder of folders) {
-        const { data: files, error: listErr } = await storage.list(
-            folder.name,
-            { limit: 1000 },
-        );
-        if (listErr) {
-            console.warn(
-                `Export sweep: failed to list ${folder.name}:`,
-                listErr.message,
-            );
-            continue;
+    try {
+        const removed = await sweepExpiredMealExports();
+        if (removed > 0) {
+            console.log(`Export sweep: removed ${removed} stale export(s).`);
         }
-        for (const file of files ?? []) {
-            const ts = file.updated_at ?? file.created_at;
-            if (ts && new Date(ts).getTime() < cutoff) {
-                stalePaths.push(`${folder.name}/${file.name}`);
-            }
-        }
-    }
-
-    if (stalePaths.length === 0) return;
-    const { error: removeErr } = await storage.remove(stalePaths);
-    if (removeErr) {
+    } catch (err) {
         console.warn(
-            "Export sweep: failed to remove files:",
-            removeErr.message,
+            "Export sweep failed:",
+            err instanceof Error ? err.message : err,
         );
-        return;
     }
-    console.log(`Export sweep: removed ${stalePaths.length} stale file(s).`);
 }
 
 let sweepRunning = false;

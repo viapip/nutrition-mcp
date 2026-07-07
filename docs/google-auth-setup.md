@@ -3,13 +3,11 @@
 This guide walks through enabling **"Continue with Google"** sign-in for nutrition-mcp.
 
 > **Read this first — the one thing tutorials get wrong for this project.**
-> This server runs the Google OAuth redirect **itself** and only hands the
-> resulting ID token to Supabase (`signInWithIdToken`). So **Google must redirect
-> back to _your_ server**, not to Supabase. The redirect URI you register in
-> Google is `https://nutrition-mcp.com/auth/google/callback` — **not** the
-> `…supabase.co/auth/v1/callback` URL most Supabase + Google guides tell you to
-> use. Supabase never receives the redirect; it only validates the token's
-> signature and audience.
+> This server runs the Google OAuth redirect **itself** and verifies the
+> resulting ID token against Google's JWKS on the server. So **Google must
+> redirect back to _your_ server**: the redirect URI you register in Google is
+> `https://nutrition-mcp.com/auth/google/callback`. No third-party auth
+> provider is involved.
 
 ---
 
@@ -66,37 +64,13 @@ revisit to add a logo or homepage/privacy links.
 
 ---
 
-## 2. Supabase — enable the Google provider
-
-1. <https://supabase.com/dashboard> → your project → **Authentication →
-   Sign In / Providers → Google**.
-2. **Enable** it and paste the **same** Client ID and Client secret from step 1.D.
-    - Supabase needs the Client ID to validate the ID token's `aud` claim. (The
-      secret is required by the form even though our server does the actual code
-      exchange.)
-3. **Skip Nonce Check: leave OFF.** The server sends a hashed nonce to Google and
-   the raw nonce to Supabase, so nonce verification passes and gives you
-   replay-attack protection.
-4. Save.
-
-### Will existing email/password users be linked when they sign in with Google?
+## 2. Will existing email/password users be linked when they sign in with Google?
 
 **Yes — automatically — as long as the Google account's email matches the email
-they registered with.** Supabase links a new OAuth identity to an existing user
-whenever the email matches and is **verified**. This is built-in GoTrue
-behavior: there is no toggle to enable it, and the **Allow manual linking**
-setting (which only governs the `linkIdentity` API) does not affect it.
-
-The only condition is that the existing account's email is verified. How that's
-satisfied depends on your **Authentication → Sign In / Providers → Email →
-Confirm email** setting:
-
-- **Confirm email OFF** (this project's default) — Supabase auto-confirms every
-  password user at signup, so all existing emails are already verified and
-  linking "just works" for everyone.
-- **Confirm email ON** — only users who actually clicked their confirmation link
-  are verified; an unconfirmed account won't be linked (Supabase requires a
-  verified email to prevent pre-account-takeover attacks).
+they registered with.** `signInWithGoogleIdToken` (`src/db.ts`) links a Google
+identity (`google_sub`) to an existing `users` row whenever the token's email
+matches and Google reports it **verified** (`email_verified: true`) — an
+unverified email is never linked, to prevent pre-account-takeover attacks.
 
 So the outcomes are:
 
@@ -140,8 +114,9 @@ Until these are set, the Google button still renders but clicking it returns
 3. Click **Continue with Google** and pick an account. You should bounce:
    `/authorize/google` → Google → `/auth/google/callback` →
    `…/health?code=…&state=test`.
-4. **Supabase → Authentication → Users**: confirm a new user with a **Google**
-   identity appeared.
+4. Check the database: `docker compose exec postgres psql -U nutrition -c
+"select email, google_sub from users"` — the account should have a
+   `google_sub`.
 5. _(Optional, full token check)_ exchange the `code` for a token and call `/mcp`:
     ```
     curl -X POST http://localhost:8080/token \
@@ -169,8 +144,8 @@ Until these are set, the Google button still renders but clicking it returns
 | `redirect_uri_mismatch` on Google's screen        | The callback URL isn't registered, or differs (http vs https, port, trailing slash). Add the exact one to **Authorized redirect URIs**.         |
 | `{"error":"google_not_configured"}`               | `GOOGLE_CLIENT_ID`/`SECRET` not set in that environment.                                                                                        |
 | "Access blocked / app not verified"               | Consent screen still in **Testing** — add your email under **Audience → Test users**, or **Publish**.                                           |
-| Sign-in returns a nonce error                     | Temporarily enable **Skip Nonce Check**, or confirm the Client ID in Supabase matches the one that issued the token.                            |
-| Two separate users for the same person            | The existing password account's email was never confirmed, so automatic linking couldn't trust the match. (Linking itself can't be turned off.) |
+| Sign-in fails right after Google consent          | `GOOGLE_CLIENT_ID` doesn't match the client that issued the token (`aud` check), or the token's nonce didn't match — retry from the login page. |
+| Two separate users for the same person            | The Google email differs from the one they registered with, so there was no verified match to link on.                                          |
 
 ---
 
@@ -182,9 +157,10 @@ login page → [Continue with Google]
       → 302 to accounts.google.com (state=session_id, nonce=sha256hex(rawNonce))
   → Google consent → 302 to GET /auth/google/callback?code=…&state=session_id
       → POST oauth2.googleapis.com/token  → id_token   (server-to-server)
-      → supabase.auth.signInWithIdToken({ provider:'google', token, nonce })
+      → verify id_token (jose + Google JWKS: iss, aud, exp, hashed nonce)
+      → find user by google_sub, else link verified email, else create
       → mint our auth code + 302 to the MCP client's redirect_uri
 ```
 
 Relevant code: `src/oauth.ts` (`/authorize/google`, `/auth/google/callback`),
-`src/supabase.ts` (`signInWithGoogleIdToken`).
+`src/db.ts` (`signInWithGoogleIdToken`).

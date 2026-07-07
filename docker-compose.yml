@@ -1,0 +1,47 @@
+services:
+    app:
+        build: .
+        ports:
+            # PORT from .env is the *host* port; inside the container the app
+            # always listens on 8080.
+            - "${PORT:-8080}:8080"
+        env_file: .env
+        environment:
+            # In-cluster address; overrides any DATABASE_URL from .env.
+            # POSTGRES_PASSWORD is interpolated into the URL verbatim, so it
+            # must be URL-safe: no @ : / # ? characters.
+            DATABASE_URL: postgres://nutrition:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/nutrition
+            PORT: 8080
+        depends_on:
+            postgres:
+                condition: service_healthy
+        restart: unless-stopped
+
+    postgres:
+        # Major version pinned: the on-disk format is tied to it, and 18+
+        # changed the official image's data layout.
+        image: postgres:17
+        environment:
+            POSTGRES_USER: nutrition
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+            POSTGRES_DB: nutrition
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+            # Applied once, on first start with an empty volume.
+            - ./db/init:/docker-entrypoint-initdb.d:ro
+        healthcheck:
+            # -h 127.0.0.1 forces TCP: during initdb a temporary server answers
+            # on the unix socket only, so a socket check reports healthy before
+            # the init SQL has run.
+            test:
+                [
+                    "CMD-SHELL",
+                    "pg_isready -h 127.0.0.1 -U nutrition -d nutrition",
+                ]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+volumes:
+    pgdata:

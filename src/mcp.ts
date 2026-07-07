@@ -29,7 +29,7 @@ import {
     type NutritionGoals,
     type WaterEntry,
     type WeightEntry,
-} from "./supabase.js";
+} from "./db.js";
 import { withAnalytics } from "./analytics.js";
 import {
     todayInTz,
