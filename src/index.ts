@@ -7,7 +7,12 @@ import { createChatRouter } from "./chat.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { handleMcp } from "./mcp.js";
 import { startExportCleanup } from "./export.js";
-import { getLandingStats, getMealExportCsv, type LandingStats } from "./db.js";
+import {
+    getLandingStats,
+    getMealExportCsv,
+    getSql,
+    type LandingStats,
+} from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { maskIp } from "./net.js";
 
@@ -255,6 +260,12 @@ if (!process.env.BASE_URL) {
             "and be unusable for remote clients.",
     );
 }
+
+// ponytail: idempotent startup ALTER instead of a migration framework —
+// db/init only runs on a fresh data dir, existing deployments need this.
+getSql()`alter table profiles add column if not exists llm_api_key text`.catch(
+    (err) => console.error("Startup migration failed:", err),
+);
 
 // Periodically delete expired meal-export files from the storage bucket.
 startExportCleanup();

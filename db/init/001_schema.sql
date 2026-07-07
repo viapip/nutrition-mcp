@@ -30,6 +30,8 @@ create table profiles (
         preferred_weight_unit is null
         or preferred_weight_unit in ('kg', 'lb')
     ),
+    -- User's own LLM API key for /api/chat; NULL falls back to the server key.
+    llm_api_key text,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
 );

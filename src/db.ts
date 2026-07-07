@@ -485,6 +485,7 @@ export interface Profile {
     user_id: string;
     timezone: string;
     preferred_weight_unit: WeightUnit | null;
+    llm_api_key: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -495,6 +496,7 @@ function mapProfile(row: Record<string, unknown>): Profile {
         timezone: row.timezone as string,
         preferred_weight_unit:
             (row.preferred_weight_unit as WeightUnit | null) ?? null,
+        llm_api_key: (row.llm_api_key as string | null) ?? null,
         created_at: iso(row.created_at),
         updated_at: iso(row.updated_at),
     };
@@ -531,24 +533,34 @@ export async function getPreferredWeightUnit(
 // first insert, omitted columns fall back to their defaults (UTC / no unit).
 export async function upsertProfile(
     userId: string,
-    patch: { timezone?: string; preferred_weight_unit?: WeightUnit | null },
+    patch: {
+        timezone?: string;
+        preferred_weight_unit?: WeightUnit | null;
+        llm_api_key?: string | null;
+    },
 ): Promise<Profile> {
     const tz = patch.timezone ?? null;
-    // null is meaningful for the unit (clears the preference), so a separate
-    // flag distinguishes "not provided" from "set to null".
+    // null is meaningful for the unit and the key (clears the value), so a
+    // separate flag distinguishes "not provided" from "set to null".
     const unitProvided = patch.preferred_weight_unit !== undefined;
     const unit = patch.preferred_weight_unit ?? null;
+    const keyProvided = patch.llm_api_key !== undefined;
+    const key = patch.llm_api_key ?? null;
 
     const db = getSql();
     try {
         const [row] = await db`
-            insert into profiles (user_id, timezone, preferred_weight_unit)
-            values (${userId}, coalesce(${tz}::text, 'UTC'), ${unit}::text)
+            insert into profiles (user_id, timezone, preferred_weight_unit, llm_api_key)
+            values (${userId}, coalesce(${tz}::text, 'UTC'), ${unit}::text, ${key}::text)
             on conflict (user_id) do update set
                 timezone = coalesce(${tz}::text, profiles.timezone),
                 preferred_weight_unit = case
                     when ${unitProvided}::boolean then ${unit}::text
                     else profiles.preferred_weight_unit
+                end,
+                llm_api_key = case
+                    when ${keyProvided}::boolean then ${key}::text
+                    else profiles.llm_api_key
                 end,
                 updated_at = now()
             returning *`;

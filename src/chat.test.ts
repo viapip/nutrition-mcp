@@ -78,11 +78,11 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
         { role: "assistant", content: "Записал 300 мл воды." },
     ]);
 
-    process.env.LLM_API_KEY = "test-key";
     const toolEvents: string[] = [];
     const reply = await runChatTurn(
         "u1",
         [{ role: "user", content: "выпил стакан воды 300мл" }],
+        "test-key",
         (name) => toolEvents.push(name),
     );
 
@@ -187,9 +187,10 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
         },
     ]);
 
-    process.env.LLM_API_KEY = "test-key";
-    const reply = await runChatTurn("u1", [
-        { role: "user", content: "log 300 ml water" },
-    ]);
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "log 300 ml water" }],
+        "test-key",
+    );
     expect(reply).toContain("Done —");
 });

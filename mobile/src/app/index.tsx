@@ -235,20 +235,36 @@ export default function DashboardScreen() {
                         <Text style={[styles.h1, { color: theme.ink }]}>
                             Today
                         </Text>
-                        <Pressable
-                            accessibilityRole="button"
-                            onPress={() => setGoalsVisible(true)}
-                            hitSlop={8}
-                        >
-                            <Text
-                                style={[
-                                    styles.headerAction,
-                                    { color: theme.accent },
-                                ]}
+                        <View style={styles.headerActions}>
+                            <Pressable
+                                accessibilityRole="button"
+                                onPress={() => router.push("/settings")}
+                                hitSlop={8}
                             >
-                                Goals
-                            </Text>
-                        </Pressable>
+                                <Text
+                                    style={[
+                                        styles.headerAction,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    Settings
+                                </Text>
+                            </Pressable>
+                            <Pressable
+                                accessibilityRole="button"
+                                onPress={() => setGoalsVisible(true)}
+                                hitSlop={8}
+                            >
+                                <Text
+                                    style={[
+                                        styles.headerAction,
+                                        { color: theme.accent },
+                                    ]}
+                                >
+                                    Goals
+                                </Text>
+                            </Pressable>
+                        </View>
                     </View>
 
                     {/* Hero: calories */}
@@ -786,6 +802,7 @@ const styles = StyleSheet.create({
         alignItems: "baseline",
         justifyContent: "space-between",
     },
+    headerActions: { flexDirection: "row", gap: Spacing.md },
     headerAction: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     h1: {
         fontFamily: Fonts.display,

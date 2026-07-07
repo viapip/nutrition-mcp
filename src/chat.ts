@@ -9,6 +9,7 @@ import {
     insertWeight,
     updateWeight,
     deleteWeight,
+    getProfile,
     getUserTimezone,
     getMealsByDate,
     getWaterByDate,
@@ -445,12 +446,15 @@ interface LlmMessage {
     }[];
 }
 
-async function callLlm(messages: unknown[]): Promise<LlmMessage> {
+async function callLlm(
+    messages: unknown[],
+    apiKey: string,
+): Promise<LlmMessage> {
     const res = await fetch(`${LLM_BASE_URL()}/chat/completions`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+            Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
             model: LLM_MODEL(),
@@ -476,6 +480,7 @@ async function callLlm(messages: unknown[]): Promise<LlmMessage> {
 export async function runChatTurn(
     userId: string,
     history: ChatMessage[],
+    apiKey: string,
     onTool?: (name: string) => void,
 ): Promise<string> {
     const tz = await getUserTimezone(userId);
@@ -499,7 +504,7 @@ export async function runChatTurn(
     let logged = false;
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const msg = await callLlm(messages);
+            const msg = await callLlm(messages, apiKey);
             if (!msg.tool_calls?.length) return msg.content ?? "";
             messages.push(msg);
             for (const call of msg.tool_calls) {
@@ -540,9 +545,6 @@ export function createChatRouter() {
     const chat = new Hono();
 
     chat.post("/api/chat", authenticateBearer, rateLimit, async (c) => {
-        if (!process.env.LLM_API_KEY) {
-            return c.json({ error: "chat_not_configured" }, 503);
-        }
         let history: ChatMessage[];
         try {
             const body = await c.req.json();
@@ -570,6 +572,13 @@ export function createChatRouter() {
         }
         const userId = c.get("userId") as string;
 
+        // The user's own key wins; the server key is the shared fallback.
+        const profile = await getProfile(userId);
+        const apiKey = profile?.llm_api_key ?? process.env.LLM_API_KEY;
+        if (!apiKey) {
+            return c.json({ error: "chat_not_configured" }, 503);
+        }
+
         // SSE: narrate tool calls while the turn runs, so the app can show
         // live status instead of a minute of typing dots.
         if (c.req.header("accept")?.includes("text/event-stream")) {
@@ -578,6 +587,7 @@ export function createChatRouter() {
                     const message = await runChatTurn(
                         userId,
                         history,
+                        apiKey,
                         (name) =>
                             void stream.writeSSE({
                                 data: JSON.stringify({ type: "tool", name }),
@@ -599,7 +609,7 @@ export function createChatRouter() {
         }
 
         try {
-            const message = await runChatTurn(userId, history);
+            const message = await runChatTurn(userId, history, apiKey);
             return c.json({ message });
         } catch (err) {
             console.error("Chat turn failed:", err);

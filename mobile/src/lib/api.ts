@@ -192,6 +192,7 @@ export async function sendChat(
         await setToken(null);
         throw new Error("unauthorized");
     }
+    if (res.status === 503) throw new Error("chat_not_configured");
     if (!res.ok || !res.body) throw new Error(`Request failed: ${res.status}`);
 
     const reader = res.body.getReader();
@@ -223,6 +224,32 @@ export async function sendChat(
         }
     }
     throw new Error("stream ended without a message");
+}
+
+// ----- settings -----
+
+export interface Settings {
+    has_llm_key: boolean;
+    chat_available: boolean;
+}
+
+let mockHasKey = false;
+
+export async function getSettings(): Promise<Settings> {
+    if (MOCK) return { has_llm_key: mockHasKey, chat_available: true };
+    return request<Settings>("/api/settings");
+}
+
+/** Pass null to remove the stored key. */
+export async function saveLlmKey(key: string | null): Promise<void> {
+    if (MOCK) {
+        mockHasKey = !!key;
+        return;
+    }
+    await request("/api/settings/llm", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: key }),
+    });
 }
 
 // ----- manual editing -----

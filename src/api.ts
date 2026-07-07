@@ -11,6 +11,8 @@ import {
     getLatestWeight,
     getNutritionGoals,
     upsertNutritionGoals,
+    getProfile,
+    upsertProfile,
     insertMeal,
     updateMeal,
     deleteMeal,
@@ -353,6 +355,34 @@ export function createApiRouter() {
         return deleted
             ? c.json({ ok: true })
             : c.json({ error: "not_found" }, 404);
+    });
+
+    // Settings. The key itself never leaves the server — only a boolean flag.
+    api.get("/api/settings", authenticateBearer, async (c) => {
+        const profile = await getProfile(c.get("userId") as string);
+        return c.json({
+            has_llm_key: !!profile?.llm_api_key,
+            chat_available: !!profile?.llm_api_key || !!process.env.LLM_API_KEY,
+        });
+    });
+
+    api.put("/api/settings/llm", authenticateBearer, async (c) => {
+        try {
+            const body = await jsonBody(c);
+            let key: string | null = null;
+            if (body.api_key != null) {
+                key = String(body.api_key).trim();
+                if (!key || key.length > 256 || /\s/.test(key)) {
+                    throw new Error("bad key");
+                }
+            }
+            await upsertProfile(c.get("userId") as string, {
+                llm_api_key: key,
+            });
+            return c.json({ has_llm_key: !!key });
+        } catch {
+            return c.json({ error: "invalid_request" }, 400);
+        }
     });
 
     // Full replace: omitted fields become null (clears that goal).

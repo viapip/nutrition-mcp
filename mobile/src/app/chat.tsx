@@ -292,7 +292,10 @@ export default function ChatScreen() {
                             err instanceof Error &&
                             err.message === "unauthorized"
                                 ? "Session expired — log in again."
-                                : "That didn't go through — try again.",
+                                : err instanceof Error &&
+                                    err.message === "chat_not_configured"
+                                  ? "The assistant needs an API key — add yours in Settings."
+                                  : "That didn't go through — try again.",
                     },
                 ]);
             }
