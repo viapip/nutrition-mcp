@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { createOAuthRouter } from "./oauth.js";
+import { createApiRouter } from "./api.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { handleMcp } from "./mcp.js";
 import { startExportCleanup } from "./export.js";
@@ -115,6 +116,9 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
 
 // OAuth routes
 app.route("/", createOAuthRouter());
+
+// Mobile app REST API (/api/login, /api/dashboard)
+app.route("/", createApiRouter());
 
 // MCP endpoint (protected)
 app.all("/mcp", authenticateBearer, rateLimit, handleMcp);

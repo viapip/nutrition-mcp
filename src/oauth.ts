@@ -56,7 +56,7 @@ function base64URLEncode(buffer: Buffer): string {
 // trustworthy only because the deployment sits behind a proxy that sets it
 // (same assumption as the /mcp rate limiter); exposed directly, the header is
 // client-controlled and only the email bucket still holds.
-function loginRateLimited(c: Context, email?: string): boolean {
+export function loginRateLimited(c: Context, email?: string): boolean {
     const ip =
         c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (!checkRateLimit(`login:ip:${ip}`).allowed) return true;

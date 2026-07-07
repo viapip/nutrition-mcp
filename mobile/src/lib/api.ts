@@ -2,8 +2,8 @@ import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 
 /**
- * API client for the nutrition-mcp server. Until the dashboard endpoints land
- * on the backend, EXPO_PUBLIC_API_URL unset = mock mode with fixture data so
+ * API client for the nutrition-mcp server (POST /api/login, GET
+ * /api/dashboard). EXPO_PUBLIC_API_URL unset = mock mode with fixture data so
  * the app runs standalone.
  */
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
