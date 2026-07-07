@@ -1,17 +1,24 @@
 import { Hono } from "hono";
 import {
     insertMeal,
+    updateMeal,
+    deleteMeal,
     insertWater,
+    deleteWater,
     insertWeight,
+    updateWeight,
+    deleteWeight,
     getUserTimezone,
     getMealsByDate,
     getWaterByDate,
     getWeightInRange,
     getLatestWeight,
     getNutritionGoals,
+    upsertNutritionGoals,
     type MealInput,
 } from "./db.js";
-import { buildDashboard } from "./api.js";
+import { buildDashboard, mealFields } from "./api.js";
+import { normalizeBarcode, lookupBarcode } from "./foods.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { todayInTz, shiftLocalDate } from "./tz.js";
@@ -130,8 +137,129 @@ const TOOLS = [
         function: {
             name: "get_dashboard",
             description:
-                "Today's snapshot: meals, calories and macros vs goals, water, and the 30-day weight series.",
+                "Today's snapshot: meals, calories and macros vs goals, water, and the 30-day weight series. Entry ids in the response can be passed to the update/delete tools.",
             parameters: { type: "object", properties: {} },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_day",
+            description:
+                "Same snapshot as get_dashboard but for a past date (YYYY-MM-DD).",
+            parameters: {
+                type: "object",
+                properties: { date: { type: "string" } },
+                required: ["date"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "update_meal",
+            description:
+                "Correct an existing meal. Pass the meal id from get_dashboard and only the fields to change; null clears a macro value.",
+            parameters: {
+                type: "object",
+                properties: {
+                    id: { type: "string" },
+                    description: { type: "string" },
+                    meal_type: {
+                        type: "string",
+                        enum: ["breakfast", "lunch", "dinner", "snack"],
+                    },
+                    calories: { type: ["number", "null"] },
+                    protein_g: { type: ["number", "null"] },
+                    carbs_g: { type: ["number", "null"] },
+                    fat_g: { type: ["number", "null"] },
+                },
+                required: ["id"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "delete_meal",
+            description: "Delete a meal by id (from get_dashboard).",
+            parameters: {
+                type: "object",
+                properties: { id: { type: "string" } },
+                required: ["id"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "delete_water",
+            description: "Delete a water entry by id (from get_dashboard).",
+            parameters: {
+                type: "object",
+                properties: { id: { type: "string" } },
+                required: ["id"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "update_weight",
+            description:
+                "Correct a weight entry by id (from get_dashboard's weight series).",
+            parameters: {
+                type: "object",
+                properties: {
+                    id: { type: "string" },
+                    weight_kg: { type: "number" },
+                },
+                required: ["id", "weight_kg"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "delete_weight",
+            description: "Delete a weight entry by id.",
+            parameters: {
+                type: "object",
+                properties: { id: { type: "string" } },
+                required: ["id"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "set_goals",
+            description:
+                "Update the user's daily targets. Pass only the fields to change — omitted ones keep their value, null clears a target.",
+            parameters: {
+                type: "object",
+                properties: {
+                    daily_calories: { type: ["number", "null"] },
+                    daily_protein_g: { type: ["number", "null"] },
+                    daily_carbs_g: { type: ["number", "null"] },
+                    daily_fat_g: { type: ["number", "null"] },
+                    daily_water_ml: { type: ["number", "null"] },
+                    target_weight_kg: { type: ["number", "null"] },
+                },
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "lookup_barcode",
+            description:
+                "Look up a packaged product's verified nutrition by barcode (EAN/UPC digits — typed by the user or read from a photo of the package). Use before log_meal for branded products, scaling to the amount eaten.",
+            parameters: {
+                type: "object",
+                properties: { barcode: { type: "string" } },
+                required: ["barcode"],
+            },
         },
     },
 ];
@@ -140,6 +268,28 @@ function positive(n: unknown): number {
     const v = Number(n);
     if (!Number.isFinite(v) || v <= 0) throw new Error(`invalid number: ${n}`);
     return v;
+}
+
+function weightGramsFromKg(v: unknown): number {
+    const g = Math.round(positive(v) * 1000);
+    if (!isPlausibleWeightGrams(g)) {
+        throw new Error("weight outside plausible range (20–500 kg)");
+    }
+    return g;
+}
+
+/** The dashboard aggregation for a given local date (defaults to today). */
+async function daySnapshot(userId: string, date?: string) {
+    const tz = await getUserTimezone(userId);
+    const day = date ?? todayInTz(tz);
+    const [meals, water, weights, latest, goals] = await Promise.all([
+        getMealsByDate(userId, day, tz),
+        getWaterByDate(userId, day, tz),
+        getWeightInRange(userId, shiftLocalDate(day, -30), day, tz),
+        getLatestWeight(userId),
+        getNutritionGoals(userId),
+    ]);
+    return buildDashboard(day, tz, meals, water, weights, latest, goals);
 }
 
 /** Executes one tool call; errors come back as a JSON payload the model can react to. */
@@ -180,43 +330,99 @@ export async function executeTool(
                 return JSON.stringify({ logged: true, entry });
             }
             case "log_weight": {
-                const grams = Math.round(positive(args.weight_kg) * 1000);
-                if (!isPlausibleWeightGrams(grams)) {
-                    throw new Error(
-                        "weight outside plausible range (20–500 kg)",
-                    );
-                }
                 const { entry } = await insertWeight(userId, {
-                    weight_g: grams,
+                    weight_g: weightGramsFromKg(args.weight_kg),
                 });
                 return JSON.stringify({ logged: true, entry });
             }
-            case "get_dashboard": {
-                const tz = await getUserTimezone(userId);
-                const today = todayInTz(tz);
-                const [meals, water, weights, latest, goals] =
-                    await Promise.all([
-                        getMealsByDate(userId, today, tz),
-                        getWaterByDate(userId, today, tz),
-                        getWeightInRange(
-                            userId,
-                            shiftLocalDate(today, -30),
-                            today,
-                            tz,
-                        ),
-                        getLatestWeight(userId),
-                        getNutritionGoals(userId),
-                    ]);
-                return JSON.stringify(
-                    buildDashboard(
-                        today,
-                        tz,
-                        meals,
-                        water,
-                        weights,
-                        latest,
-                        goals,
+            case "get_dashboard":
+                return JSON.stringify(await daySnapshot(userId));
+            case "get_day": {
+                const date = String(args.date ?? "");
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+                    throw new Error("date must be YYYY-MM-DD");
+                }
+                return JSON.stringify(await daySnapshot(userId, date));
+            }
+            case "update_meal": {
+                const id = String(args.id ?? "");
+                if (!id) throw new Error("id required");
+                const meal = await updateMeal(
+                    userId,
+                    id,
+                    mealFields(args, true),
+                );
+                return JSON.stringify({ updated: true, meal });
+            }
+            case "delete_meal": {
+                await deleteMeal(userId, String(args.id ?? ""));
+                return JSON.stringify({ deleted: true });
+            }
+            case "delete_water": {
+                await deleteWater(userId, String(args.id ?? ""));
+                return JSON.stringify({ deleted: true });
+            }
+            case "update_weight": {
+                const entry = await updateWeight(
+                    userId,
+                    String(args.id ?? ""),
+                    { weight_g: weightGramsFromKg(args.weight_kg) },
+                );
+                return JSON.stringify({ updated: true, entry });
+            }
+            case "delete_weight": {
+                const deleted = await deleteWeight(
+                    userId,
+                    String(args.id ?? ""),
+                );
+                if (!deleted) throw new Error("weight entry not found");
+                return JSON.stringify({ deleted: true });
+            }
+            case "set_goals": {
+                const current = await getNutritionGoals(userId);
+                // Merge semantics: only keys present in args change; null clears.
+                const num = (k: string, cur: number | null) =>
+                    k in args
+                        ? args[k] == null
+                            ? null
+                            : positive(args[k])
+                        : cur;
+                const goals = await upsertNutritionGoals(userId, {
+                    daily_calories: num(
+                        "daily_calories",
+                        current?.daily_calories ?? null,
                     ),
+                    daily_protein_g: num(
+                        "daily_protein_g",
+                        current?.daily_protein_g ?? null,
+                    ),
+                    daily_carbs_g: num(
+                        "daily_carbs_g",
+                        current?.daily_carbs_g ?? null,
+                    ),
+                    daily_fat_g: num(
+                        "daily_fat_g",
+                        current?.daily_fat_g ?? null,
+                    ),
+                    daily_water_ml: num(
+                        "daily_water_ml",
+                        current?.daily_water_ml ?? null,
+                    ),
+                    target_weight_g:
+                        "target_weight_kg" in args
+                            ? args.target_weight_kg == null
+                                ? null
+                                : weightGramsFromKg(args.target_weight_kg)
+                            : (current?.target_weight_g ?? null),
+                });
+                return JSON.stringify({ saved: true, goals });
+            }
+            case "lookup_barcode": {
+                const normalized = normalizeBarcode(String(args.barcode ?? ""));
+                if (!normalized) throw new Error("invalid barcode");
+                const food = await lookupBarcode(normalized);
+                return JSON.stringify(
+                    food ? { found: true, food } : { found: false },
                 );
             }
             default:
@@ -276,8 +482,10 @@ export async function runChatTurn(
             content:
                 "You are the assistant inside a personal nutrition-tracking app. " +
                 "Log meals, water and weight with the tools when the user reports them; " +
-                "consult get_dashboard before answering questions about today or progress. " +
+                "consult get_dashboard before answering questions about today or progress, and get_day for past dates. " +
+                "To correct or remove an entry, find its id via get_dashboard/get_day first, then use the update/delete tools. " +
                 "Estimate calories/macros yourself when the user doesn't give numbers, and say you estimated. " +
+                "For packaged products with a barcode (typed, or readable on a photo of the package), call lookup_barcode first and scale to the amount eaten. " +
                 "When the user sends a food photo, identify the dish and portion size, estimate calories and macros, and log the meal. " +
                 `Today is ${todayInTz(tz)} (${tz}). ` +
                 "Reply in the user's language, in one or two short sentences.",
@@ -303,7 +511,9 @@ export async function runChatTurn(
                     call.function.name,
                     args,
                 );
-                if (result.startsWith('{"logged":true')) logged = true;
+                if (/^\{"(logged|updated|deleted|saved)":true/.test(result)) {
+                    logged = true;
+                }
                 messages.push({
                     role: "tool",
                     tool_call_id: call.id,
@@ -316,7 +526,7 @@ export async function runChatTurn(
         // A retry after a partial success would double-log (idempotency keys
         // include a fresh logged_at), so degrade to a canned confirmation.
         if (logged) {
-            return "Logged it — but I couldn't finish a reply. Check the dashboard.";
+            return "Done — but I couldn't finish a reply. Check the dashboard.";
         }
         throw err;
     }

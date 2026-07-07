@@ -127,6 +127,31 @@ test("executeTool converts weight kg to grams and reports bad input", async () =
     expect(unknown.error).toContain("unknown tool");
 });
 
+test("executeTool set_goals merges with current goals", async () => {
+    const goalsRow = {
+        user_id: "u1",
+        daily_calories: 2000,
+        daily_protein_g: 150,
+        daily_carbs_g: null,
+        daily_fat_g: null,
+        daily_water_ml: 2000,
+        target_weight_g: 74000,
+        updated_at: "2026-07-07T10:00:00Z",
+    };
+    const calls = installFakeSql([
+        { rows: [goalsRow] }, // getNutritionGoals
+        { rows: [{ ...goalsRow, daily_calories: 1800 }] }, // upsert returning
+    ]);
+    const res = JSON.parse(
+        await executeTool("u1", "set_goals", { daily_calories: 1800 }),
+    );
+    expect(res.saved).toBe(true);
+    // changed field is written, untouched ones survive the merge
+    expect(calls[1]!.values).toContain(1800);
+    expect(calls[1]!.values).toContain(150);
+    expect(calls[1]!.values).toContain(74000);
+});
+
 test("executeTool rejects implausible weight", async () => {
     installFakeSql([]);
     const bad = JSON.parse(
@@ -162,5 +187,5 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
     const reply = await runChatTurn("u1", [
         { role: "user", content: "log 300 ml water" },
     ]);
-    expect(reply).toContain("Logged it");
+    expect(reply).toContain("Done —");
 });
