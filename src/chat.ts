@@ -12,6 +12,7 @@ import {
     type MealInput,
 } from "./db.js";
 import { buildDashboard } from "./api.js";
+import { isPlausibleWeightGrams } from "./units.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { todayInTz, shiftLocalDate } from "./tz.js";
 
@@ -179,8 +180,14 @@ export async function executeTool(
                 return JSON.stringify({ logged: true, entry });
             }
             case "log_weight": {
+                const grams = Math.round(positive(args.weight_kg) * 1000);
+                if (!isPlausibleWeightGrams(grams)) {
+                    throw new Error(
+                        "weight outside plausible range (20–500 kg)",
+                    );
+                }
                 const { entry } = await insertWeight(userId, {
-                    weight_g: Math.round(positive(args.weight_kg) * 1000),
+                    weight_g: grams,
                 });
                 return JSON.stringify({ logged: true, entry });
             }
@@ -278,25 +285,41 @@ export async function runChatTurn(
         ...history,
     ];
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        const msg = await callLlm(messages);
-        if (!msg.tool_calls?.length) return msg.content ?? "";
-        messages.push(msg);
-        for (const call of msg.tool_calls) {
-            let args: Record<string, unknown> = {};
-            try {
-                args = JSON.parse(call.function.arguments || "{}");
-            } catch {
-                // leave args empty; executeTool reports the validation error
+    let logged = false;
+    try {
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            const msg = await callLlm(messages);
+            if (!msg.tool_calls?.length) return msg.content ?? "";
+            messages.push(msg);
+            for (const call of msg.tool_calls) {
+                let args: Record<string, unknown> = {};
+                try {
+                    args = JSON.parse(call.function.arguments || "{}");
+                } catch {
+                    // leave args empty; executeTool reports the validation error
+                }
+                const result = await executeTool(
+                    userId,
+                    call.function.name,
+                    args,
+                );
+                if (result.startsWith('{"logged":true')) logged = true;
+                messages.push({
+                    role: "tool",
+                    tool_call_id: call.id,
+                    content: result,
+                });
             }
-            messages.push({
-                role: "tool",
-                tool_call_id: call.id,
-                content: await executeTool(userId, call.function.name, args),
-            });
         }
+        throw new Error("tool loop did not converge");
+    } catch (err) {
+        // A retry after a partial success would double-log (idempotency keys
+        // include a fresh logged_at), so degrade to a canned confirmation.
+        if (logged) {
+            return "Logged it — but I couldn't finish a reply. Check the dashboard.";
+        }
+        throw err;
     }
-    throw new Error("tool loop did not converge");
 }
 
 export function createChatRouter() {

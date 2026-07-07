@@ -27,6 +27,7 @@ import {
 } from "./db.js";
 import { authenticateBearer } from "./middleware.js";
 import { loginRateLimited } from "./oauth.js";
+import { isPlausibleWeightGrams } from "./units.js";
 import { todayInTz, shiftLocalDate, hourInTz, dateInTz } from "./tz.js";
 
 /**
@@ -123,7 +124,7 @@ function posNum(v: unknown): number {
 }
 
 /** Extracts meal fields from a request body; `partial` allows omitting all. */
-function mealFields(
+export function mealFields(
     body: Record<string, unknown>,
     partial: boolean,
 ): Partial<MealInput> {
@@ -140,11 +141,22 @@ function mealFields(
         out.meal_type = body.meal_type as MealInput["meal_type"];
     }
     for (const k of ["calories", "protein_g", "carbs_g", "fat_g"] as const) {
-        if (body[k] !== undefined) {
-            out[k] = body[k] === null ? undefined : posNum(body[k]);
+        if (body[k] === undefined) continue;
+        // null on PATCH clears the stored value; on POST it means "not given"
+        if (body[k] === null) {
+            if (partial) out[k] = null;
+        } else {
+            out[k] = posNum(body[k]);
         }
     }
     return out;
+}
+
+/** kg from the request body → integer grams, rejecting implausible values. */
+function weightGrams(v: unknown): number {
+    const g = Math.round(posNum(v) * 1000);
+    if (!isPlausibleWeightGrams(g)) throw new Error("implausible weight");
+    return g;
 }
 
 async function jsonBody(c: {
@@ -202,14 +214,16 @@ export function createApiRouter() {
         if (!email || !password) {
             return c.json({ error: "invalid_request" }, 400);
         }
+        // Rate-limit before the invite-code check so the code can't be
+        // brute-forced with unlimited attempts.
+        if (loginRateLimited(c, email)) {
+            return c.json({ error: "rate_limited" }, 429);
+        }
         // Optional gate: signup burns LLM tokens, so a shared invite code
         // keeps strangers out without building real invitations.
         const required = process.env.SIGNUP_CODE;
         if (required && body.code !== required) {
             return c.json({ error: "invalid_code" }, 403);
-        }
-        if (loginRateLimited(c, email)) {
-            return c.json({ error: "rate_limited" }, 429);
         }
         try {
             const userId = await signUpUser(email, password);
@@ -303,7 +317,7 @@ export function createApiRouter() {
         try {
             const body = await jsonBody(c);
             const { entry } = await insertWeight(c.get("userId") as string, {
-                weight_g: Math.round(posNum(body.weight_kg) * 1000),
+                weight_g: weightGrams(body.weight_kg),
             });
             return c.json({ entry }, 201);
         } catch {
@@ -315,7 +329,7 @@ export function createApiRouter() {
         let weightG: number;
         try {
             const body = await jsonBody(c);
-            weightG = Math.round(posNum(body.weight_kg) * 1000);
+            weightG = weightGrams(body.weight_kg);
         } catch {
             return c.json({ error: "invalid_request" }, 400);
         }
@@ -357,7 +371,7 @@ export function createApiRouter() {
                     target_weight_g:
                         body.target_weight_kg == null
                             ? null
-                            : Math.round(posNum(body.target_weight_kg) * 1000),
+                            : weightGrams(body.target_weight_kg),
                 },
             );
             return c.json({ goals });

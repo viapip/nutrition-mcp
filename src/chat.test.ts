@@ -126,3 +126,41 @@ test("executeTool converts weight kg to grams and reports bad input", async () =
     const unknown = JSON.parse(await executeTool("u1", "nope", {}));
     expect(unknown.error).toContain("unknown tool");
 });
+
+test("executeTool rejects implausible weight", async () => {
+    installFakeSql([]);
+    const bad = JSON.parse(
+        await executeTool("u1", "log_weight", { weight_kg: 8000 }),
+    );
+    expect(bad.error).toContain("plausible");
+});
+
+test("runChatTurn falls back to a canned reply when the LLM dies after a logged tool", async () => {
+    installFakeSql([
+        { rows: [] }, // getUserTimezone
+        { rows: [] }, // insertWater: idempotency lookup
+        { rows: [waterRow] }, // insertWater: insert returning
+    ]);
+    // Only one scripted response: the second LLM call gets no message and throws.
+    fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: {
+                        name: "log_water",
+                        arguments: '{"amount_ml":300}',
+                    },
+                },
+            ],
+        },
+    ]);
+
+    process.env.LLM_API_KEY = "test-key";
+    const reply = await runChatTurn("u1", [
+        { role: "user", content: "log 300 ml water" },
+    ]);
+    expect(reply).toContain("Logged it");
+});

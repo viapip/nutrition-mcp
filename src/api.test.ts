@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildDashboard } from "./api.js";
+import { buildDashboard, mealFields } from "./api.js";
 import type { Meal, WaterEntry, WeightEntry, NutritionGoals } from "./db.js";
 
 const meal = (over: Partial<Meal>): Meal => ({
@@ -109,4 +109,18 @@ test("buildDashboard with no data and no goals is all zeros/nulls", () => {
     expect(d.water.entries).toEqual([]);
     expect(d.weight).toEqual({ current_g: null, target_g: null, series: [] });
     expect(d.meals).toEqual([]);
+});
+
+test("mealFields: PATCH null clears a macro, junk is rejected", () => {
+    expect(mealFields({ calories: null }, true)).toEqual({ calories: null });
+    expect(mealFields({ protein_g: 12 }, true)).toEqual({ protein_g: 12 });
+    // on POST null just means "not given"
+    expect(
+        mealFields(
+            { description: "x", meal_type: "snack", calories: null },
+            false,
+        ),
+    ).toEqual({ description: "x", meal_type: "snack" });
+    expect(() => mealFields({ calories: "junk" }, true)).toThrow();
+    expect(() => mealFields({ calories: -1 }, true)).toThrow();
 });

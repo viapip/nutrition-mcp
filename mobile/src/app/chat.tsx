@@ -52,16 +52,24 @@ function messageImage(m: ChatMessage): string | null {
     return img?.image_url.url ?? null;
 }
 
+// Client-side caps with margin under the server's 40 messages / 16k chars,
+// so a long conversation keeps working instead of tripping a 400.
+const TRIM_MESSAGES = 30;
+const TRIM_CHARS = 12_000;
+// Server's per-image cap (data-URL length)
+const MAX_IMAGE_CHARS = 1_500_000;
+
 /**
  * Keep only the newest photo in the request payload: older images are
  * replaced with a text stub so history stays under the server's size caps
- * while the model still knows a photo was there.
+ * while the model still knows a photo was there. Oldest messages are
+ * dropped once the history outgrows the client caps.
  */
 function slimHistory(messages: ChatMessage[]): ChatMessage[] {
     const lastWithImage = messages.findLastIndex(
         (m) => messageImage(m) != null,
     );
-    return messages.map((m, i) => {
+    let out = messages.map((m, i) => {
         if (i === lastWithImage || typeof m.content === "string") return m;
         const text = messageText(m);
         return {
@@ -69,6 +77,21 @@ function slimHistory(messages: ChatMessage[]): ChatMessage[] {
             content: messageImage(m) ? `[photo of food] ${text}`.trim() : text,
         };
     });
+    const chars = (ms: ChatMessage[]) =>
+        ms.reduce((n, m) => n + messageText(m).length, 0);
+    while (
+        out.length > 1 &&
+        (out.length > TRIM_MESSAGES || chars(out) > TRIM_CHARS)
+    ) {
+        out = out.slice(1);
+    }
+    return out;
+}
+
+/** Alert.alert is a no-op on react-native-web, so fall back to window.alert. */
+function notify(title: string, message: string) {
+    if (Platform.OS === "web") window.alert(`${title}\n${message}`);
+    else Alert.alert(title, message);
 }
 
 function TypingDots({ theme }: { theme: Theme }) {
@@ -124,6 +147,27 @@ export default function ChatScreen() {
     const [busy, setBusy] = useState(false);
     const scrollRef = useRef<ScrollView>(null);
 
+    const acceptImage = (base64: string | null | undefined) => {
+        if (!base64) return;
+        const dataUrl = `data:image/jpeg;base64,${base64}`;
+        if (dataUrl.length > MAX_IMAGE_CHARS) {
+            notify("Photo too large", "Pick a smaller photo or crop it.");
+            return;
+        }
+        setPendingImage(dataUrl);
+    };
+
+    // Android may destroy the activity while the camera is open; recover
+    // the shot on remount instead of silently losing it.
+    useEffect(() => {
+        if (Platform.OS !== "android") return;
+        void ImagePicker.getPendingResultAsync().then((r) => {
+            if (r && !("code" in r) && !r.canceled) {
+                acceptImage(r.assets?.[0]?.base64);
+            }
+        });
+    }, []);
+
     const pickImage = async (fromCamera: boolean) => {
         const perm = fromCamera
             ? await ImagePicker.requestCameraPermissionsAsync()
@@ -140,9 +184,8 @@ export default function ChatScreen() {
                   quality: 0.4,
                   base64: true,
               });
-        const asset = result.assets?.[0];
-        if (result.canceled || !asset?.base64) return;
-        setPendingImage(`data:image/jpeg;base64,${asset.base64}`);
+        if (result.canceled) return;
+        acceptImage(result.assets?.[0]?.base64);
     };
 
     const attach = () => {

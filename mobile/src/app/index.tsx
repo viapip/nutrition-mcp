@@ -64,6 +64,7 @@ export default function DashboardScreen() {
         Math.min(width, MaxContentWidth) - Spacing.lg * 2 - Spacing.md * 2;
 
     const [data, setData] = useState<DashboardData | null>(null);
+    const [failed, setFailed] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [mealEditor, setMealEditor] = useState<{
         visible: boolean;
@@ -78,8 +79,15 @@ export default function DashboardScreen() {
     const load = useCallback(async () => {
         try {
             setData(await getDashboard());
-        } catch {
-            router.replace("/login");
+            setFailed(false);
+        } catch (err) {
+            // Only a rejected token means logout; a transient server/network
+            // error keeps whatever is on screen and lets the user retry.
+            if (err instanceof Error && err.message === "unauthorized") {
+                router.replace("/login");
+            } else {
+                setFailed(true);
+            }
         }
     }, []);
 
@@ -111,7 +119,27 @@ export default function DashboardScreen() {
         void load();
     }, [closeEditors, load]);
 
-    if (!data) return null;
+    if (!data) {
+        if (!failed) return null;
+        return (
+            <SafeAreaView
+                style={[
+                    styles.safe,
+                    styles.retryWrap,
+                    { backgroundColor: theme.surface },
+                ]}
+            >
+                <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void load()}
+                >
+                    <Text style={[styles.retryText, { color: theme.ink }]}>
+                        {"Couldn't load — tap to retry"}
+                    </Text>
+                </Pressable>
+            </SafeAreaView>
+        );
+    }
 
     const kcalPct = data.calories.goal
         ? Math.min(data.calories.eaten / data.calories.goal, 1)
@@ -629,6 +657,8 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
     safe: { flex: 1 },
+    retryWrap: { alignItems: "center", justifyContent: "center" },
+    retryText: { fontFamily: Fonts.sansMedium, fontSize: 15 },
     scroll: { paddingBottom: Spacing.xxl * 2 },
     wrap: {
         width: "100%",

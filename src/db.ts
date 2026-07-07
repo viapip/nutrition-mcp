@@ -295,10 +295,11 @@ export interface Meal {
 export interface MealInput {
     description: string;
     meal_type: "breakfast" | "lunch" | "dinner" | "snack";
-    calories?: number;
-    protein_g?: number;
-    carbs_g?: number;
-    fat_g?: number;
+    // null clears the stored value on update (insert treats it as "not given")
+    calories?: number | null;
+    protein_g?: number | null;
+    carbs_g?: number | null;
+    fat_g?: number | null;
     logged_at?: string;
     notes?: string;
     idempotency_key?: string;
