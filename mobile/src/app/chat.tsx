@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -9,6 +10,7 @@ import {
     Animated,
     Image,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     Pressable,
     ScrollView,
@@ -17,6 +19,8 @@ import {
     TextInput,
     useColorScheme,
     View,
+    type NativeSyntheticEvent,
+    type TextInputKeyPressEventData,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -36,11 +40,35 @@ import {
 } from "@/lib/api";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
-const SUGGESTIONS = [
-    "Овсянка с ягодами на завтрак",
-    "Запиши 300 мл воды",
-    "Как у меня дела сегодня?",
-];
+// Локальная надстройка над проводным форматом: время и флаг сбоя живут
+// только в сторадже/стейте, в запрос уходят голые {role, content}.
+type Msg = ChatMessage & { at?: number; failed?: boolean };
+
+/** Подсказки под час: утром — про завтрак, вечером — про итоги.
+ * `send` уходит сразу, `prefill` лишь заполняет поле — блюдо надо дописать. */
+type Suggestion = {
+    label: string;
+    send?: string;
+    prefill?: string;
+    camera?: boolean;
+};
+function suggestions(): Suggestion[] {
+    const h = new Date().getHours();
+    const meal =
+        h < 11
+            ? { label: "Записать завтрак…", prefill: "На завтрак " }
+            : h < 16
+              ? { label: "Записать обед…", prefill: "На обед " }
+              : { label: "Записать ужин…", prefill: "На ужин " }; // и ночью
+    return [
+        { label: "Сфоткать тарелку", camera: true },
+        meal,
+        { label: "+300 мл воды", send: "Запиши 300 мл воды" },
+        h >= 18
+            ? { label: "Итог дня", send: "Как прошёл мой день?" }
+            : { label: "Как дела?", send: "Как у меня дела сегодня?" },
+    ];
+}
 
 function messageText(m: ChatMessage): string {
     if (typeof m.content === "string") return m.content;
@@ -72,14 +100,17 @@ const MAX_IMAGE_CHARS = 1_500_000;
  * Keep only the newest photo in the request payload: older images are
  * replaced with a text stub so history stays under the server's size caps
  * while the model still knows a photo was there. Oldest messages are
- * dropped once the history outgrows the client caps.
+ * dropped once the history outgrows the client caps. Local bookkeeping
+ * (`at`, `failed`) never leaves the device: error bubbles are dropped,
+ * the rest are rebuilt as plain {role, content}.
  */
-function slimHistory(messages: ChatMessage[]): ChatMessage[] {
-    const lastWithImage = messages.findLastIndex(
-        (m) => messageImage(m) != null,
-    );
-    let out = messages.map((m, i) => {
-        if (i === lastWithImage || typeof m.content === "string") return m;
+function slimHistory(messages: Msg[]): ChatMessage[] {
+    const live = messages.filter((m) => !m.failed);
+    const lastWithImage = live.findLastIndex((m) => messageImage(m) != null);
+    let out = live.map((m, i): ChatMessage => {
+        if (i === lastWithImage || typeof m.content === "string") {
+            return { role: m.role, content: m.content };
+        }
         const text = messageText(m);
         return {
             role: m.role,
@@ -182,17 +213,40 @@ const CHAT_KEY = "nutrition_chat";
  * file:// photo refs are tiny and persist as-is (so old chats keep their
  * pictures); raw data URLs (web) are megabytes — those become text stubs.
  */
-function storable(messages: ChatMessage[]): ChatMessage[] {
+function storable(messages: Msg[]): Msg[] {
     return messages.slice(-60).map((m) => {
         if (typeof m.content === "string") return m;
         const image = messageImage(m);
         if (image?.startsWith("file://")) return m;
         const text = messageText(m);
         return {
-            role: m.role,
+            ...m,
             content: image ? `[photo of food] ${text}`.trim() : text,
         };
     });
+}
+
+const DRAFT_KEY = "nutrition_chat_draft";
+
+/** Сообщение с локальным таймстемпом (вне компонента — правило purity). */
+function stamped(
+    role: Msg["role"],
+    content: Msg["content"],
+    failed?: boolean,
+): Msg {
+    return failed
+        ? { role, content, at: Date.now(), failed }
+        : { role, content, at: Date.now() };
+}
+
+/** «Сегодня», «Вчера», иначе «5 июля» — для разделителей в ленте. */
+function dayLabel(at: number): string {
+    const d = new Date(at);
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 86_400_000);
+    if (d.toDateString() === today.toDateString()) return "Сегодня";
+    if (d.toDateString() === yesterday.toDateString()) return "Вчера";
+    return d.toLocaleDateString("ru-RU", { month: "long", day: "numeric" });
 }
 
 /** What the typing bubble says while the assistant runs a tool. */
@@ -258,7 +312,7 @@ export default function ChatScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
 
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [messages, setMessages] = useState<Msg[]>([]);
     const [hydrated, setHydrated] = useState(false);
     const [input, setInput] = useState("");
     const [pendingImage, setPendingImage] = useState<string | null>(null);
@@ -267,8 +321,16 @@ export default function ChatScreen() {
     const [needsKey, setNeedsKey] = useState(false);
     // Purely visual: paints the input border accent while focused.
     const [inputFocused, setInputFocused] = useState(false);
+    // Кнопка «вниз» — когда юзер листает историю и лента уехала.
+    const [showJump, setShowJump] = useState(false);
+    // «Скопировано» — мимолётная плашка после долгого тапа по пузырю.
+    const [copied, setCopied] = useState(false);
+    const [viewerUri, setViewerUri] = useState<string | null>(null);
+    const atBottom = useRef(true);
+    const inputRef = useRef<TextInput>(null);
     const scrollRef = useRef<ScrollView>(null);
     const abortRef = useRef<AbortController | null>(null);
+    const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Surface "assistant is off" before the first send, not after it fails.
     // On focus, not mount: the banner leads to settings and must clear on
@@ -285,7 +347,7 @@ export default function ChatScreen() {
     useEffect(() => {
         AsyncStorage.getItem(CHAT_KEY)
             .then((raw) => {
-                const restored = raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+                const restored = raw ? (JSON.parse(raw) as Msg[]) : [];
                 if (restored.length) {
                     // The user may have typed before hydration finished —
                     // never clobber a live conversation with the stored one.
@@ -295,15 +357,31 @@ export default function ChatScreen() {
             })
             .catch(() => {})
             .finally(() => setHydrated(true));
+        // Недописанное сообщение переживает перезапуск приложения.
+        AsyncStorage.getItem(DRAFT_KEY)
+            .then((d) => {
+                if (d) setInput((cur) => cur || d);
+            })
+            .catch(() => {});
     }, []);
     useEffect(() => {
         if (!hydrated) return;
         void AsyncStorage.setItem(CHAT_KEY, JSON.stringify(storable(messages)));
     }, [messages, hydrated]);
+    // Черновик пишется с паузой, чтобы не дёргать сторадж на каждый символ.
+    useEffect(() => {
+        const t = setTimeout(() => {
+            void (input
+                ? AsyncStorage.setItem(DRAFT_KEY, input)
+                : AsyncStorage.removeItem(DRAFT_KEY));
+        }, 400);
+        return () => clearTimeout(t);
+    }, [input]);
 
     const wipeChat = () => {
         abortRef.current?.abort();
         setMessages([]);
+        setShowJump(false);
         // The pending photo's file is about to be swept with the rest.
         setPendingImage(null);
         void AsyncStorage.removeItem(CHAT_KEY);
@@ -419,22 +497,13 @@ export default function ChatScreen() {
         ]);
     };
 
-    const send = async (textOverride?: string) => {
-        const text = (textOverride ?? input).trim();
-        if ((!text && !pendingImage) || busy) return;
-
-        const content: ChatMessage["content"] = pendingImage
-            ? ([
-                  { type: "image_url", image_url: { url: pendingImage } },
-                  ...(text ? [{ type: "text", text } as ChatPart] : []),
-              ] as ChatPart[])
-            : text;
-        const next = [...messages, { role: "user" as const, content }];
-        tapBuzz();
-        setMessages(next);
-        setInput("");
-        setPendingImage(null);
+    // Один ход ассистента поверх готовой истории; и send, и retry идут сюда.
+    // ref-замок: два быстрых тапа читают одно и то же устаревшее busy.
+    const runLock = useRef(false);
+    const run = async (next: Msg[]) => {
+        runLock.current = true;
         setBusy(true);
+        setStatus("Думаю…");
         const ctrl = new AbortController();
         abortRef.current = ctrl;
         try {
@@ -444,29 +513,126 @@ export default function ChatScreen() {
                 ctrl.signal,
             );
             successBuzz();
-            setMessages([...next, { role: "assistant", content: reply }]);
+            setMessages([...next, stamped("assistant", reply)]);
         } catch (err) {
             // Cancelled by the user — keep their message, add nothing.
             if (!ctrl.signal.aborted) {
                 setMessages([
                     ...next,
-                    {
-                        role: "assistant",
-                        content:
-                            err instanceof Error &&
-                            err.message === "unauthorized"
-                                ? "Сессия истекла — войди заново."
-                                : err instanceof Error &&
-                                    err.message === "chat_not_configured"
-                                  ? "Ассистенту нужен API-ключ — добавь свой в настройках."
-                                  : "Не получилось — попробуй ещё раз.",
-                    },
+                    stamped(
+                        "assistant",
+                        err instanceof Error && err.message === "unauthorized"
+                            ? "Сессия истекла — войди заново."
+                            : err instanceof Error &&
+                                err.message === "chat_not_configured"
+                              ? "Ассистенту нужен API-ключ — добавь свой в настройках."
+                              : "Не получилось. Проверь сеть — сообщение никуда не делось.",
+                        true,
+                    ),
                 ]);
             }
         } finally {
+            runLock.current = false;
             abortRef.current = null;
             setBusy(false);
             setStatus(null);
+        }
+    };
+
+    const send = async (textOverride?: string) => {
+        const text = (textOverride ?? input).trim();
+        if ((!text && !pendingImage) || busy || runLock.current) return;
+
+        const content: ChatMessage["content"] = pendingImage
+            ? ([
+                  { type: "image_url", image_url: { url: pendingImage } },
+                  ...(text ? [{ type: "text", text } as ChatPart] : []),
+              ] as ChatPart[])
+            : text;
+        // Хвост из сбойных заметок вычищается — новая попытка идёт с чистой
+        // историей, а не поверх «не получилось».
+        const base = messages.filter((m) => !m.failed);
+        const next = [...base, stamped("user", content)];
+        tapBuzz();
+        setMessages(next);
+        setInput("");
+        void AsyncStorage.removeItem(DRAFT_KEY);
+        setPendingImage(null);
+        await run(next);
+    };
+
+    // «Повторить» на сбойном пузыре: та же история, без перепечатывания.
+    const retry = async () => {
+        if (busy || runLock.current) return;
+        tapBuzz();
+        const base = messages.filter((m) => !m.failed);
+        if (base.length === 0) return;
+        setMessages(base);
+        await run(base);
+    };
+
+    const copyMessage = async (text: string) => {
+        if (!text) return;
+        try {
+            await Clipboard.setStringAsync(text);
+        } catch {
+            return; // буфер недоступен — молча, тост был бы враньём
+        }
+        tapBuzz();
+        setCopied(true);
+        if (copiedTimer.current) clearTimeout(copiedTimer.current);
+        copiedTimer.current = setTimeout(() => setCopied(false), 1500);
+    };
+
+    const onSuggestion = (s: Suggestion) => {
+        if (s.camera) {
+            // На вебе камеры нет — открываем выбор файла.
+            void pickImage(Platform.OS !== "web");
+            return;
+        }
+        if (s.send) {
+            void send(s.send);
+            return;
+        }
+        if (s.prefill) {
+            tapBuzz();
+            // Уже набранный текст не затираем — только фокусируем поле.
+            setInput((cur) => (cur.trim() ? cur : s.prefill!));
+            inputRef.current?.focus();
+        }
+    };
+
+    useEffect(
+        () => () => {
+            if (copiedTimer.current) clearTimeout(copiedTimer.current);
+        },
+        [],
+    );
+
+    // Разделитель дня: локальный день сообщения отличается от дня ближайшего
+    // предыдущего сообщения с таймстемпом (у легаси-историй его нет).
+    const showDaySep = (i: number): boolean => {
+        const at = messages[i]?.at;
+        if (at == null) return false;
+        const day = new Date(at).toDateString();
+        for (let j = i - 1; j >= 0; j--) {
+            const prev = messages[j]?.at;
+            if (prev != null) return new Date(prev).toDateString() !== day;
+        }
+        return true;
+    };
+
+    // Enter отправляет на вебе; перенос строки — Shift+Enter, как в мессенджерах.
+    const onKeyPress = (
+        e: NativeSyntheticEvent<TextInputKeyPressEventData>,
+    ) => {
+        if (Platform.OS !== "web") return;
+        const native = e.nativeEvent as TextInputKeyPressEventData & {
+            shiftKey?: boolean;
+        };
+        if (native.key === "Enter" && !native.shiftKey) {
+            e.preventDefault();
+            void send();
         }
     };
 
@@ -548,150 +714,291 @@ export default function ChatScreen() {
                         </Pressable>
                     )}
 
-                    <ScrollView
-                        ref={scrollRef}
-                        style={styles.flex}
-                        contentContainerStyle={styles.messages}
-                        onContentSizeChange={() =>
-                            scrollRef.current?.scrollToEnd({ animated: true })
-                        }
-                    >
-                        {messages.length === 0 && (
-                            <View style={styles.empty}>
-                                <Text
-                                    style={[
-                                        styles.emptyTitle,
-                                        { color: theme.ink },
-                                    ]}
-                                >
-                                    Расскажи,{"\n"}
+                    <View style={styles.flex}>
+                        <ScrollView
+                            ref={scrollRef}
+                            style={styles.flex}
+                            contentContainerStyle={styles.messages}
+                            keyboardShouldPersistTaps="handled"
+                            scrollEventThrottle={48}
+                            onScroll={(e) => {
+                                const {
+                                    contentOffset,
+                                    layoutMeasurement,
+                                    contentSize,
+                                } = e.nativeEvent;
+                                const nearBottom =
+                                    contentOffset.y +
+                                        layoutMeasurement.height >=
+                                    contentSize.height - 48;
+                                atBottom.current = nearBottom;
+                                // Кнопка «вниз» живёт всегда, когда лента
+                                // уехала, — не только при новых сообщениях.
+                                setShowJump(!nearBottom && messages.length > 0);
+                            }}
+                            onContentSizeChange={() => {
+                                // Автоскролл только когда юзер и так внизу; если он
+                                // читает историю — не дёргаем, а показываем «вниз».
+                                if (atBottom.current) {
+                                    scrollRef.current?.scrollToEnd({
+                                        animated: true,
+                                    });
+                                } else {
+                                    setShowJump(true);
+                                }
+                            }}
+                        >
+                            {messages.length === 0 && (
+                                <View style={styles.empty}>
                                     <Text
                                         style={[
-                                            styles.emptyItalic,
-                                            { color: theme.accent },
+                                            styles.emptyTitle,
+                                            { color: theme.ink },
                                         ]}
                                     >
-                                        что на тарелке.
-                                    </Text>
-                                </Text>
-                                <Text
-                                    style={[
-                                        styles.emptyHint,
-                                        { color: theme.inkMuted },
-                                    ]}
-                                >
-                                    {
-                                        "Напиши текстом или сфоткай тарелку — я прикину и запишу."
-                                    }
-                                </Text>
-                                <View style={styles.chips}>
-                                    {SUGGESTIONS.map((s) => (
-                                        <Pressable
-                                            key={s}
-                                            accessibilityRole="button"
-                                            onPress={() => void send(s)}
-                                            style={({ pressed }) => [
-                                                styles.chip,
-                                                {
-                                                    backgroundColor:
-                                                        theme.accentSoft,
-                                                },
-                                                pressed && { opacity: 0.7 },
-                                            ]}
-                                        >
-                                            <Text
-                                                style={[
-                                                    styles.chipText,
-                                                    { color: theme.accent },
-                                                ]}
-                                            >
-                                                {s}
-                                            </Text>
-                                        </Pressable>
-                                    ))}
-                                </View>
-                            </View>
-                        )}
-
-                        {messages.map((m, i) => {
-                            const mine = m.role === "user";
-                            const image = messageImage(m);
-                            const text = messageText(m);
-                            return (
-                                <View
-                                    key={i}
-                                    style={[
-                                        styles.bubble,
-                                        mine
-                                            ? [
-                                                  styles.bubbleMine,
-                                                  {
-                                                      backgroundColor:
-                                                          theme.accent,
-                                                  },
-                                              ]
-                                            : [
-                                                  styles.bubbleTheirs,
-                                                  {
-                                                      backgroundColor:
-                                                          theme.surfaceElevated,
-                                                      borderColor:
-                                                          theme.hairline,
-                                                  },
-                                              ],
-                                    ]}
-                                >
-                                    {image && (
-                                        <Image
-                                            source={{ uri: image }}
-                                            style={styles.bubbleImage}
-                                        />
-                                    )}
-                                    {!!text && (
+                                        Расскажи,{"\n"}
                                         <Text
                                             style={[
-                                                styles.bubbleText,
-                                                {
-                                                    color: mine
-                                                        ? theme.onAccent
-                                                        : theme.ink,
-                                                },
+                                                styles.emptyItalic,
+                                                { color: theme.accent },
                                             ]}
                                         >
-                                            {text}
+                                            что на тарелке.
                                         </Text>
-                                    )}
+                                    </Text>
+                                    <Text
+                                        style={[
+                                            styles.emptyHint,
+                                            { color: theme.inkMuted },
+                                        ]}
+                                    >
+                                        {
+                                            "Напиши текстом или сфоткай тарелку — я прикину и запишу."
+                                        }
+                                    </Text>
+                                    <View style={styles.chips}>
+                                        {suggestions().map((s) => (
+                                            <Pressable
+                                                key={s.label}
+                                                accessibilityRole="button"
+                                                onPress={() => onSuggestion(s)}
+                                                style={({ pressed }) => [
+                                                    styles.chip,
+                                                    {
+                                                        backgroundColor:
+                                                            theme.accentSoft,
+                                                    },
+                                                    pressed && { opacity: 0.7 },
+                                                ]}
+                                            >
+                                                <Text
+                                                    style={[
+                                                        styles.chipText,
+                                                        { color: theme.accent },
+                                                    ]}
+                                                >
+                                                    {s.label}
+                                                </Text>
+                                            </Pressable>
+                                        ))}
+                                    </View>
                                 </View>
-                            );
-                        })}
+                            )}
 
-                        {busy && (
-                            <View
+                            {messages.map((m, i) => {
+                                const mine = m.role === "user";
+                                const image = messageImage(m);
+                                const text = messageText(m);
+                                const showDay = showDaySep(i);
+                                return (
+                                    <View key={i} style={styles.messageBlock}>
+                                        {showDay && m.at != null && (
+                                            <Text
+                                                style={[
+                                                    styles.daySep,
+                                                    { color: theme.inkMuted },
+                                                ]}
+                                            >
+                                                {dayLabel(m.at).toUpperCase()}
+                                            </Text>
+                                        )}
+                                        <Pressable
+                                            accessibilityLabel={
+                                                text
+                                                    ? "Сообщение, долгое нажатие копирует"
+                                                    : undefined
+                                            }
+                                            onLongPress={() =>
+                                                void copyMessage(text)
+                                            }
+                                            delayLongPress={350}
+                                            style={[
+                                                styles.bubble,
+                                                mine
+                                                    ? [
+                                                          styles.bubbleMine,
+                                                          {
+                                                              backgroundColor:
+                                                                  theme.accent,
+                                                          },
+                                                      ]
+                                                    : [
+                                                          styles.bubbleTheirs,
+                                                          {
+                                                              backgroundColor:
+                                                                  theme.surfaceElevated,
+                                                              borderColor:
+                                                                  m.failed
+                                                                      ? theme.danger
+                                                                      : theme.hairline,
+                                                          },
+                                                      ],
+                                            ]}
+                                        >
+                                            {image && (
+                                                <Pressable
+                                                    accessibilityRole="imagebutton"
+                                                    accessibilityLabel="Открыть фото"
+                                                    onPress={() =>
+                                                        setViewerUri(image)
+                                                    }
+                                                >
+                                                    <Image
+                                                        source={{ uri: image }}
+                                                        style={
+                                                            styles.bubbleImage
+                                                        }
+                                                    />
+                                                </Pressable>
+                                            )}
+                                            {!!text && (
+                                                <Text
+                                                    style={[
+                                                        styles.bubbleText,
+                                                        {
+                                                            color: mine
+                                                                ? theme.onAccent
+                                                                : m.failed
+                                                                  ? theme.inkSecondary
+                                                                  : theme.ink,
+                                                        },
+                                                    ]}
+                                                >
+                                                    {text}
+                                                </Text>
+                                            )}
+                                        </Pressable>
+                                        {m.failed && (
+                                            <Pressable
+                                                accessibilityRole="button"
+                                                onPress={() => void retry()}
+                                                style={({ pressed }) => [
+                                                    styles.retryChip,
+                                                    {
+                                                        backgroundColor:
+                                                            theme.accentSoft,
+                                                        opacity: pressed
+                                                            ? 0.7
+                                                            : 1,
+                                                    },
+                                                ]}
+                                            >
+                                                <Text
+                                                    style={[
+                                                        styles.chipText,
+                                                        {
+                                                            color: theme.accent,
+                                                        },
+                                                    ]}
+                                                >
+                                                    ↻ Повторить
+                                                </Text>
+                                            </Pressable>
+                                        )}
+                                    </View>
+                                );
+                            })}
+
+                            {busy && (
+                                <View
+                                    style={[
+                                        styles.bubble,
+                                        styles.bubbleTheirs,
+                                        {
+                                            backgroundColor:
+                                                theme.surfaceElevated,
+                                            borderColor: theme.hairline,
+                                        },
+                                    ]}
+                                >
+                                    <View style={styles.statusRow}>
+                                        <TypingDots theme={theme} />
+                                        {status && (
+                                            <Text
+                                                style={[
+                                                    styles.statusText,
+                                                    {
+                                                        color: theme.inkSecondary,
+                                                    },
+                                                ]}
+                                            >
+                                                {status}
+                                            </Text>
+                                        )}
+                                    </View>
+                                </View>
+                            )}
+                        </ScrollView>
+
+                        {showJump && (
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="К последним сообщениям"
+                                onPress={() => {
+                                    scrollRef.current?.scrollToEnd({
+                                        animated: true,
+                                    });
+                                    setShowJump(false);
+                                }}
                                 style={[
-                                    styles.bubble,
-                                    styles.bubbleTheirs,
+                                    styles.jump,
                                     {
                                         backgroundColor: theme.surfaceElevated,
                                         borderColor: theme.hairline,
                                     },
                                 ]}
                             >
-                                <View style={styles.statusRow}>
-                                    <TypingDots theme={theme} />
-                                    {status && (
-                                        <Text
-                                            style={[
-                                                styles.statusText,
-                                                { color: theme.inkSecondary },
-                                            ]}
-                                        >
-                                            {status}
-                                        </Text>
-                                    )}
-                                </View>
+                                <Text
+                                    style={[
+                                        styles.jumpIcon,
+                                        { color: theme.accent },
+                                    ]}
+                                >
+                                    ↓
+                                </Text>
+                            </Pressable>
+                        )}
+                        {copied && (
+                            <View
+                                style={[
+                                    styles.copied,
+                                    {
+                                        backgroundColor: theme.surfaceElevated,
+                                        borderColor: theme.hairline,
+                                    },
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.copiedText,
+                                        { color: theme.inkSecondary },
+                                    ]}
+                                >
+                                    Скопировано
+                                </Text>
                             </View>
                         )}
-                    </ScrollView>
+                    </View>
 
                     {/* Pending photo preview */}
                     {pendingImage && (
@@ -727,6 +1034,45 @@ export default function ChatScreen() {
                         </View>
                     )}
 
+                    {/* Подсказки живут и в непустом чате — пока поле свободно */}
+                    {messages.length > 0 &&
+                        !busy &&
+                        !input &&
+                        !pendingImage && (
+                            <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                keyboardShouldPersistTaps="handled"
+                                style={styles.suggestStrip}
+                                contentContainerStyle={styles.suggestRow}
+                            >
+                                {suggestions().map((s) => (
+                                    <Pressable
+                                        key={s.label}
+                                        accessibilityRole="button"
+                                        onPress={() => onSuggestion(s)}
+                                        style={({ pressed }) => [
+                                            styles.suggestChip,
+                                            {
+                                                backgroundColor:
+                                                    theme.accentSoft,
+                                                opacity: pressed ? 0.7 : 1,
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.suggestText,
+                                                { color: theme.accent },
+                                            ]}
+                                        >
+                                            {s.label}
+                                        </Text>
+                                    </Pressable>
+                                ))}
+                            </ScrollView>
+                        )}
+
                     {/* Input bar */}
                     <View
                         style={[
@@ -754,6 +1100,7 @@ export default function ChatScreen() {
                             </Text>
                         </Pressable>
                         <TextInput
+                            ref={inputRef}
                             style={[
                                 styles.input,
                                 {
@@ -771,6 +1118,7 @@ export default function ChatScreen() {
                             value={input}
                             onChangeText={setInput}
                             onSubmitEditing={() => void send()}
+                            onKeyPress={onKeyPress}
                             onFocus={() => setInputFocused(true)}
                             onBlur={() => setInputFocused(false)}
                             multiline
@@ -817,6 +1165,29 @@ export default function ChatScreen() {
                     </View>
                 </View>
             </KeyboardAvoidingView>
+
+            {/* Полноэкранный просмотр фото из переписки */}
+            <Modal
+                visible={viewerUri != null}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setViewerUri(null)}
+            >
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Закрыть фото"
+                    style={styles.viewerBackdrop}
+                    onPress={() => setViewerUri(null)}
+                >
+                    {viewerUri && (
+                        <Image
+                            source={{ uri: viewerUri }}
+                            style={styles.viewerImage}
+                            resizeMode="contain"
+                        />
+                    )}
+                </Pressable>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -876,6 +1247,66 @@ const styles = StyleSheet.create({
         alignSelf: "flex-start",
     },
     chipText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
+    messageBlock: { gap: Spacing.sm },
+    daySep: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 10,
+        letterSpacing: 2,
+        textAlign: "center",
+        paddingVertical: Spacing.xs,
+    },
+    retryChip: {
+        alignSelf: "flex-start",
+        borderRadius: Radii.xl,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 8,
+    },
+    jump: {
+        position: "absolute",
+        right: Spacing.lg,
+        bottom: Spacing.md,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        elevation: 4,
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+    },
+    jumpIcon: { fontFamily: Fonts.sansSemiBold, fontSize: 18 },
+    copied: {
+        position: "absolute",
+        top: Spacing.sm,
+        alignSelf: "center",
+        borderWidth: 1,
+        borderRadius: Radii.xl,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 7,
+    },
+    copiedText: { fontFamily: Fonts.sansMedium, fontSize: 12 },
+    suggestStrip: { flexGrow: 0 },
+    suggestRow: {
+        gap: Spacing.sm,
+        paddingHorizontal: Spacing.lg,
+        paddingBottom: Spacing.sm,
+    },
+    suggestChip: {
+        borderRadius: Radii.xl,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 8,
+    },
+    suggestText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    viewerBackdrop: {
+        flex: 1,
+        backgroundColor: "rgba(18,13,7,0.92)",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: Spacing.lg,
+    },
+    viewerImage: { width: "100%", height: "80%" },
     bubble: {
         maxWidth: "85%",
         borderRadius: Radii.lg,
