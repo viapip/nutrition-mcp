@@ -86,7 +86,8 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
         (name) => toolEvents.push(name),
     );
 
-    expect(reply).toBe("Записал 300 мл воды.");
+    expect(reply.message).toBe("Записал 300 мл воды.");
+    expect(reply.proposals).toEqual([]);
     expect(toolEvents).toEqual(["log_water"]);
     // insert got the parsed amount
     expect(sqlCalls[2]!.values).toContain(300);
@@ -226,5 +227,42 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
         [{ role: "user", content: "log 300 ml water" }],
         "test-key",
     );
-    expect(reply).toContain("Записал —");
+    expect(reply.message).toContain("Записал —");
+});
+
+test("propose_meal returns a card and writes nothing to the database", async () => {
+    // Only the timezone lookup is scripted: any insert would hit "unexpected".
+    installFakeSql([{ rows: [] }]);
+    fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: {
+                        name: "propose_meal",
+                        arguments:
+                            '{"description":"Овсянка с бананом","meal_type":"breakfast","calories":320,"protein_g":9}',
+                    },
+                },
+            ],
+        },
+        { role: "assistant", content: "Прикинул на глаз — проверь карточку." },
+    ]);
+
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "съел овсянку с бананом" }],
+        "test-key",
+    );
+    expect(reply.proposals).toEqual([
+        {
+            description: "Овсянка с бананом",
+            meal_type: "breakfast",
+            calories: 320,
+            protein_g: 9,
+        },
+    ]);
+    expect(reply.message).toContain("карточку");
 });

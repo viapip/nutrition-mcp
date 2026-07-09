@@ -33,16 +33,25 @@ import {
     type Theme,
 } from "@/constants/theme";
 import {
+    addMeal,
     getSettings,
     sendChat,
     type ChatMessage,
     type ChatPart,
+    type MealFields,
 } from "@/lib/api";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
-// Локальная надстройка над проводным форматом: время и флаг сбоя живут
-// только в сторадже/стейте, в запрос уходят голые {role, content}.
-type Msg = ChatMessage & { at?: number; failed?: boolean };
+/** Карточка «записать?» из propose_meal; resolved живёт только на девайсе. */
+type Proposal = MealFields & { resolved?: "saved" | "declined" };
+
+// Локальная надстройка над проводным форматом: время, флаг сбоя и карточки
+// живут только в сторадже/стейте, в запрос уходят голые {role, content}.
+type Msg = ChatMessage & {
+    at?: number;
+    failed?: boolean;
+    proposals?: Proposal[];
+};
 
 /** Подсказки под час: утром — про завтрак, вечером — про итоги.
  * `send` уходит сразу, `prefill` лишь заполняет поле — блюдо надо дописать. */
@@ -96,6 +105,23 @@ const TRIM_CHARS = 12_000;
 // Server's per-image cap (data-URL length)
 const MAX_IMAGE_CHARS = 1_500_000;
 
+/** Судьбу карточек модель узнаёт из текста: сами proposals в запрос не уходят. */
+function proposalNote(m: Msg): string {
+    if (!m.proposals?.length) return "";
+    return m.proposals
+        .map(
+            (p) =>
+                `\n[card "${p.description}": ${
+                    p.resolved === "saved"
+                        ? "user confirmed — saved"
+                        : p.resolved === "declined"
+                          ? "user declined — not saved"
+                          : "no answer — not saved"
+                }]`,
+        )
+        .join("");
+}
+
 /**
  * Keep only the newest photo in the request payload: older images are
  * replaced with a text stub so history stays under the server's size caps
@@ -108,7 +134,10 @@ function slimHistory(messages: Msg[]): ChatMessage[] {
     const live = messages.filter((m) => !m.failed);
     const lastWithImage = live.findLastIndex((m) => messageImage(m) != null);
     let out = live.map((m, i): ChatMessage => {
-        if (i === lastWithImage || typeof m.content === "string") {
+        if (typeof m.content === "string") {
+            return { role: m.role, content: m.content + proposalNote(m) };
+        }
+        if (i === lastWithImage) {
             return { role: m.role, content: m.content };
         }
         const text = messageText(m);
@@ -251,6 +280,7 @@ function dayLabel(at: number): string {
 
 /** What the typing bubble says while the assistant runs a tool. */
 const TOOL_STATUS: Record<string, string> = {
+    propose_meal: "Готовлю карточку…",
     log_meal: "Записываю еду…",
     log_water: "Записываю воду…",
     log_weight: "Записываю вес…",
@@ -264,6 +294,136 @@ const TOOL_STATUS: Record<string, string> = {
     set_goals: "Обновляю цели…",
     lookup_barcode: "Читаю штрихкод…",
 };
+
+const MEAL_TYPE_RU: Record<string, string> = {
+    breakfast: "Завтрак",
+    lunch: "Обед",
+    dinner: "Ужин",
+    snack: "Перекус",
+};
+
+function macroLine(p: MealFields): string {
+    const parts: string[] = [];
+    if (p.protein_g != null) parts.push(`Б ${p.protein_g}`);
+    if (p.fat_g != null) parts.push(`Ж ${p.fat_g}`);
+    if (p.carbs_g != null) parts.push(`У ${p.carbs_g}`);
+    return parts.join("  ·  ");
+}
+
+/**
+ * Карточка подтверждения. «Записать» пишет напрямую через REST — без второго
+ * прогона LLM, цифры уходят ровно те, что на карточке. Кнопки живут только
+ * пока сообщение последнее (active): дальше диалог ушёл, модель предложит
+ * заново — так исключаются записи по устаревшим карточкам.
+ */
+function ProposalCard({
+    p,
+    theme,
+    active,
+    saving,
+    onResolve,
+}: {
+    p: Proposal;
+    theme: Theme;
+    active: boolean;
+    saving: boolean;
+    onResolve: (save: boolean) => void;
+}) {
+    const macros = macroLine(p);
+    return (
+        <View
+            style={[
+                styles.card,
+                {
+                    backgroundColor: theme.surfaceElevated,
+                    borderColor:
+                        p.resolved === "saved" ? theme.accent : theme.hairline,
+                },
+            ]}
+        >
+            <View style={styles.cardHead}>
+                <Text style={[styles.cardType, { color: theme.inkMuted }]}>
+                    {(MEAL_TYPE_RU[p.meal_type] ?? p.meal_type).toUpperCase()}
+                </Text>
+                {p.calories != null && (
+                    <Text style={[styles.cardKcal, { color: theme.accent }]}>
+                        ≈ {p.calories} ккал
+                    </Text>
+                )}
+            </View>
+            <Text style={[styles.cardDesc, { color: theme.ink }]}>
+                {p.description}
+            </Text>
+            {!!macros && (
+                <Text
+                    style={[styles.cardMacros, { color: theme.inkSecondary }]}
+                >
+                    {macros}
+                </Text>
+            )}
+            {p.resolved === "saved" ? (
+                <Text style={[styles.cardStatus, { color: theme.accent }]}>
+                    ✓ В дневнике
+                </Text>
+            ) : p.resolved === "declined" ? (
+                <Text style={[styles.cardStatus, { color: theme.inkMuted }]}>
+                    Отменено
+                </Text>
+            ) : active ? (
+                <View style={styles.cardButtons}>
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Записать: ${p.description}`}
+                        disabled={saving}
+                        onPress={() => onResolve(true)}
+                        style={({ pressed }) => [
+                            styles.cardYes,
+                            {
+                                backgroundColor: theme.accent,
+                                opacity: pressed || saving ? 0.6 : 1,
+                            },
+                        ]}
+                    >
+                        <Text
+                            style={[
+                                styles.cardYesText,
+                                { color: theme.onAccent },
+                            ]}
+                        >
+                            {saving ? "Записываю…" : "Записать"}
+                        </Text>
+                    </Pressable>
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Не записывать"
+                        disabled={saving}
+                        onPress={() => onResolve(false)}
+                        style={({ pressed }) => [
+                            styles.cardNo,
+                            {
+                                borderColor: theme.hairline,
+                                opacity: pressed ? 0.6 : 1,
+                            },
+                        ]}
+                    >
+                        <Text
+                            style={[
+                                styles.cardNoText,
+                                { color: theme.inkSecondary },
+                            ]}
+                        >
+                            Не надо
+                        </Text>
+                    </Pressable>
+                </View>
+            ) : (
+                <Text style={[styles.cardStatus, { color: theme.inkMuted }]}>
+                    Не записано
+                </Text>
+            )}
+        </View>
+    );
+}
 
 function TypingDots({ theme }: { theme: Theme }) {
     // useState, not useRef: reading a ref during render trips react-hooks/refs
@@ -513,12 +673,20 @@ export default function ChatScreen() {
                 ctrl.signal,
             );
             successBuzz();
-            setMessages([...next, stamped("assistant", reply)]);
+            const assistant = stamped("assistant", reply.message);
+            // Функциональный аппенд, не захваченный next: пока ход шёл,
+            // карточка могла резолвнуться — её флаг нельзя затереть.
+            setMessages((cur) => [
+                ...cur,
+                reply.proposals.length
+                    ? { ...assistant, proposals: reply.proposals }
+                    : assistant,
+            ]);
         } catch (err) {
             // Cancelled by the user — keep their message, add nothing.
             if (!ctrl.signal.aborted) {
-                setMessages([
-                    ...next,
+                setMessages((cur) => [
+                    ...cur,
                     stamped(
                         "assistant",
                         err instanceof Error && err.message === "unauthorized"
@@ -569,6 +737,56 @@ export default function ChatScreen() {
         if (base.length === 0) return;
         setMessages(base);
         await run(base);
+    };
+
+    // Карточка: «Записать» — прямой REST без LLM, «Не надо» — локальная пометка.
+    const [savingCard, setSavingCard] = useState<string | null>(null);
+    const markProposal = (
+        mi: number,
+        pi: number,
+        resolved: "saved" | "declined",
+    ) =>
+        setMessages((cur) =>
+            cur.map((m, i) =>
+                i === mi
+                    ? {
+                          ...m,
+                          proposals: m.proposals?.map((p, j) =>
+                              j === pi ? { ...p, resolved } : p,
+                          ),
+                      }
+                    : m,
+            ),
+        );
+    const resolveProposal = async (mi: number, pi: number, save: boolean) => {
+        const p = messages[mi]?.proposals?.[pi];
+        if (!p || p.resolved || savingCard) return;
+        if (!save) {
+            tapBuzz();
+            markProposal(mi, pi, "declined");
+            return;
+        }
+        setSavingCard(`${mi}:${pi}`);
+        try {
+            await addMeal({
+                description: p.description,
+                meal_type: p.meal_type,
+                calories: p.calories ?? null,
+                protein_g: p.protein_g ?? null,
+                carbs_g: p.carbs_g ?? null,
+                fat_g: p.fat_g ?? null,
+            });
+            successBuzz();
+            markProposal(mi, pi, "saved");
+        } catch (err) {
+            if (err instanceof Error && err.message === "unauthorized") {
+                router.replace("/login");
+                return;
+            }
+            notify("Не записалось", "Проверь сеть и попробуй ещё раз.");
+        } finally {
+            setSavingCard(null);
+        }
     };
 
     const copyMessage = async (text: string) => {
@@ -888,6 +1106,27 @@ export default function ChatScreen() {
                                                 </Text>
                                             )}
                                         </Pressable>
+                                        {m.proposals?.map((p, pi) => (
+                                            <ProposalCard
+                                                key={pi}
+                                                p={p}
+                                                theme={theme}
+                                                active={
+                                                    i === messages.length - 1 &&
+                                                    !busy
+                                                }
+                                                saving={
+                                                    savingCard === `${i}:${pi}`
+                                                }
+                                                onResolve={(save) =>
+                                                    void resolveProposal(
+                                                        i,
+                                                        pi,
+                                                        save,
+                                                    )
+                                                }
+                                            />
+                                        ))}
                                         {m.failed && (
                                             <Pressable
                                                 accessibilityRole="button"
@@ -1327,6 +1566,44 @@ const styles = StyleSheet.create({
     },
     dotsRow: { flexDirection: "row", gap: 5, paddingVertical: 4 },
     dot: { width: 7, height: 7, borderRadius: 4 },
+    card: {
+        alignSelf: "flex-start",
+        width: "85%",
+        borderWidth: 1,
+        borderRadius: Radii.lg,
+        padding: Spacing.md,
+        gap: 6,
+    },
+    cardHead: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+    },
+    cardType: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 10,
+        letterSpacing: 2,
+    },
+    cardKcal: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    cardDesc: { fontFamily: Fonts.sansMedium, fontSize: 15, lineHeight: 21 },
+    cardMacros: { fontFamily: Fonts.sans, fontSize: 13 },
+    cardStatus: { fontFamily: Fonts.sansMedium, fontSize: 13, marginTop: 2 },
+    cardButtons: { flexDirection: "row", gap: Spacing.sm, marginTop: 4 },
+    cardYes: {
+        flex: 1,
+        borderRadius: Radii.md,
+        paddingVertical: 10,
+        alignItems: "center",
+    },
+    cardYesText: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    cardNo: {
+        flex: 1,
+        borderWidth: 1,
+        borderRadius: Radii.md,
+        paddingVertical: 10,
+        alignItems: "center",
+    },
+    cardNoText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     preview: {
         paddingHorizontal: Spacing.lg,
         paddingBottom: Spacing.sm,

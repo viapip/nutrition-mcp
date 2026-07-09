@@ -55,6 +55,16 @@ export interface ChatMessage {
 const MAX_IMAGES = 4;
 const MAX_IMAGE_DATA_URL_CHARS = 1_500_000; // ~1MB decoded
 
+/** A meal card awaiting the user's Confirm/Cancel tap; nothing is saved yet. */
+export interface MealProposal {
+    description: string;
+    meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+    calories?: number;
+    protein_g?: number;
+    carbs_g?: number;
+    fat_g?: number;
+}
+
 function textLength(content: ChatMessage["content"]): number {
     if (typeof content === "string") return content.length;
     return content.reduce(
@@ -93,6 +103,31 @@ const TOOLS = [
             name: "log_meal",
             description:
                 "Log a meal the user ate. Estimate calories and macros from the description when the user does not provide them.",
+            parameters: {
+                type: "object",
+                properties: {
+                    description: { type: "string" },
+                    meal_type: {
+                        type: "string",
+                        enum: ["breakfast", "lunch", "dinner", "snack"],
+                    },
+                    calories: { type: "number" },
+                    protein_g: { type: "number" },
+                    carbs_g: { type: "number" },
+                    fat_g: { type: "number" },
+                },
+                required: ["description", "meal_type"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "propose_meal",
+            description:
+                "Show the user a meal card with Confirm/Cancel buttons instead of saving. " +
+                "The app logs the entry itself when the user taps Confirm — never follow up with log_meal. " +
+                "Always include your calorie and macro estimates.",
             parameters: {
                 type: "object",
                 properties: {
@@ -278,6 +313,41 @@ function weightGramsFromKg(v: unknown): number {
         throw new Error("weight outside plausible range (20–500 kg)");
     }
     return g;
+}
+
+const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"] as const;
+
+/** propose_meal: validate into a card for the client; no DB write happens here. */
+function collectProposal(
+    args: Record<string, unknown>,
+    out: MealProposal[],
+): string {
+    try {
+        const description = String(args.description ?? "").trim();
+        if (!description) throw new Error("description required");
+        const meal_type = args.meal_type as MealProposal["meal_type"];
+        if (!MEAL_TYPES.includes(meal_type)) {
+            throw new Error("meal_type must be breakfast|lunch|dinner|snack");
+        }
+        const p: MealProposal = { description, meal_type };
+        for (const k of [
+            "calories",
+            "protein_g",
+            "carbs_g",
+            "fat_g",
+        ] as const) {
+            if (args[k] != null) p[k] = positive(args[k]);
+        }
+        out.push(p);
+        return JSON.stringify({
+            proposed: true,
+            note: "Card shown to the user with Confirm/Cancel buttons; the app saves it on Confirm. Do not call log_meal for this entry — nothing is saved yet.",
+        });
+    } catch (err) {
+        return JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+        });
+    }
 }
 
 /** The dashboard aggregation for a given local date (defaults to today). */
@@ -499,22 +569,26 @@ export async function runChatTurn(
     apiKey: string,
     onTool?: (name: string) => void,
     signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ message: string; proposals: MealProposal[] }> {
     const tz = await getUserTimezone(userId);
     const messages: unknown[] = [
         {
             role: "system",
             content:
                 "You are the assistant inside a personal nutrition-tracking app. " +
-                "Log meals, water and weight with the tools when the user reports them. " +
+                "MEALS NEED CONFIRMATION: when the user mentions food they ate, call propose_meal with your estimates — the app shows a card with Confirm/Cancel buttons and saves it itself on Confirm. " +
+                "After propose_meal, reply with one short sentence (note what you estimated); the buttons handle the confirmation — don't ask in words. " +
+                "Call log_meal directly only when the user's message is an explicit command to log ('запиши', 'добавь', 'внеси') or they just typed their agreement to your proposal. " +
+                "Water and weight are unambiguous — log them immediately without asking. " +
                 "CRITICAL: data is saved ONLY by tool calls. Never say an entry was logged, " +
-                "updated or deleted unless the corresponding tool returned success in this turn; " +
-                "if you did not call the tool, call it now instead of answering. " +
-                "consult get_dashboard before answering questions about today or progress, and get_day for past dates. " +
-                "To correct or remove an entry, find its id via get_dashboard/get_day first, then use the update/delete tools. " +
+                "updated or deleted unless the corresponding tool returned success in this turn; a proposal awaiting confirmation is not saved. " +
+                "Consult get_dashboard before answering questions about today or progress, and get_day for past dates. " +
+                "ENTRY IDS: you cannot see ids from earlier turns of the conversation — never guess, invent or reuse one. " +
+                "To correct or remove an entry, always call get_dashboard (or get_day) first in the SAME turn, match the entry by its description, and take the id from that fresh response. " +
+                "If several entries match, list them and ask which one; confirm deletions before calling delete tools. " +
                 "Estimate calories/macros yourself when the user doesn't give numbers, and say you estimated. " +
                 "For packaged products with a barcode (typed, or readable on a photo of the package), call lookup_barcode first and scale to the amount eaten. " +
-                "When the user sends a food photo, identify the dish and portion size, estimate calories and macros, and log the meal. " +
+                "When the user sends a food photo, identify the dish and portion size, estimate calories and macros, and call propose_meal. " +
                 `Today is ${todayInTz(tz)} (${tz}). ` +
                 "Reply in the user's language, in one or two short sentences.",
         },
@@ -522,10 +596,13 @@ export async function runChatTurn(
     ];
 
     let logged = false;
+    const proposals: MealProposal[] = [];
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
             const msg = await callLlm(messages, apiKey, signal);
-            if (!msg.tool_calls?.length) return msg.content ?? "";
+            if (!msg.tool_calls?.length) {
+                return { message: msg.content ?? "", proposals };
+            }
             messages.push(msg);
             for (const call of msg.tool_calls) {
                 // Client hit Stop — don't run tools it no longer wants.
@@ -537,11 +614,10 @@ export async function runChatTurn(
                     // leave args empty; executeTool reports the validation error
                 }
                 onTool?.(call.function.name);
-                const result = await executeTool(
-                    userId,
-                    call.function.name,
-                    args,
-                );
+                const result =
+                    call.function.name === "propose_meal"
+                        ? collectProposal(args, proposals)
+                        : await executeTool(userId, call.function.name, args);
                 if (/^\{"(logged|updated|deleted|saved)":true/.test(result)) {
                     logged = true;
                 }
@@ -557,7 +633,10 @@ export async function runChatTurn(
         // A retry after a partial success would double-log (idempotency keys
         // include a fresh logged_at), so degrade to a canned confirmation.
         if (logged) {
-            return "Записал — но ответ не дописался. Загляни в дашборд.";
+            return {
+                message: "Записал — но ответ не дописался. Загляни в дашборд.",
+                proposals,
+            };
         }
         throw err;
     }
@@ -606,7 +685,7 @@ export function createChatRouter() {
         if (c.req.header("accept")?.includes("text/event-stream")) {
             return streamSSE(c, async (stream) => {
                 try {
-                    const message = await runChatTurn(
+                    const { message, proposals } = await runChatTurn(
                         userId,
                         history,
                         apiKey,
@@ -619,7 +698,11 @@ export function createChatRouter() {
                         c.req.raw.signal,
                     );
                     await stream.writeSSE({
-                        data: JSON.stringify({ type: "done", message }),
+                        data: JSON.stringify({
+                            type: "done",
+                            message,
+                            proposals,
+                        }),
                     });
                 } catch (err) {
                     console.error("Chat turn failed:", err);
@@ -634,14 +717,14 @@ export function createChatRouter() {
         }
 
         try {
-            const message = await runChatTurn(
+            const { message, proposals } = await runChatTurn(
                 userId,
                 history,
                 apiKey,
                 undefined,
                 c.req.raw.signal,
             );
-            return c.json({ message });
+            return c.json({ message, proposals });
         } catch (err) {
             console.error("Chat turn failed:", err);
             return c.json({ error: "chat_failed" }, 502);

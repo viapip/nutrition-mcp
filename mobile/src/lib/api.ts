@@ -146,6 +146,12 @@ export interface ChatMessage {
     content: string | ChatPart[];
 }
 
+export interface ChatReply {
+    message: string;
+    /** Карточки «записать?» — ассистент предложил, кнопки решают. */
+    proposals: MealFields[];
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const token = await getToken();
     const res = await fetch(`${API_URL}${path}`, {
@@ -224,11 +230,23 @@ export async function sendChat(
     messages: ChatMessage[],
     onTool?: (name: string) => void,
     signal?: AbortSignal,
-): Promise<string> {
+): Promise<ChatReply> {
     if (MOCK) {
-        onTool?.("log_meal");
+        onTool?.("propose_meal");
         await new Promise((r) => setTimeout(r, 900));
-        return "Logged it — roughly 420 kcal, 18 g protein (estimated). Anything else?";
+        return {
+            message: "Прикинул на глаз — проверь карточку.",
+            proposals: [
+                {
+                    description: "Овсянка с бананом",
+                    meal_type: "breakfast",
+                    calories: 320,
+                    protein_g: 9,
+                    carbs_g: 55,
+                    fat_g: 7,
+                },
+            ],
+        };
     }
     const token = await getToken();
     const res = await expoFetch(`${API_URL}/api/chat`, {
@@ -269,11 +287,15 @@ export async function sendChat(
             if (!data) continue;
             const event = JSON.parse(data) as
                 | { type: "tool"; name: string }
-                | { type: "done"; message: string }
+                | { type: "done"; message: string; proposals?: MealFields[] }
                 | { type: "error"; error: string };
             if (event.type === "tool") onTool?.(event.name);
-            else if (event.type === "done") return event.message;
-            else throw new Error(event.error);
+            else if (event.type === "done") {
+                return {
+                    message: event.message,
+                    proposals: event.proposals ?? [],
+                };
+            } else throw new Error(event.error);
         }
     }
     throw new Error("stream ended without a message");
