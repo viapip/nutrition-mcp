@@ -37,10 +37,10 @@ import {
 import { tapBuzz } from "@/lib/haptics";
 
 const MEAL_TYPES: { key: MealType; label: string }[] = [
-    { key: "breakfast", label: "Breakfast" },
-    { key: "lunch", label: "Lunch" },
-    { key: "dinner", label: "Dinner" },
-    { key: "snack", label: "Snack" },
+    { key: "breakfast", label: "Завтрак" },
+    { key: "lunch", label: "Обед" },
+    { key: "dinner", label: "Ужин" },
+    { key: "snack", label: "Перекус" },
 ];
 
 /** "" → null, "12,5" → 12.5, junk/≤0 → NaN (blocks save). */
@@ -218,7 +218,7 @@ function SheetActions({
                     style={[styles.deleteBtn, { borderColor: theme.danger }]}
                 >
                     <Text style={[styles.deleteText, { color: theme.danger }]}>
-                        Delete
+                        Удалить
                     </Text>
                 </Pressable>
             )}
@@ -240,7 +240,7 @@ function SheetActions({
                 ]}
             >
                 <Text style={[styles.saveText, { color: theme.onAccent }]}>
-                    {busy ? "Saving…" : "Save"}
+                    {busy ? "Сохраняю…" : "Сохранить"}
                 </Text>
             </Pressable>
         </View>
@@ -265,7 +265,7 @@ export function MealEditor({
     return (
         <Sheet
             visible={visible}
-            title={meal ? "Edit meal" : "Add meal"}
+            title={meal ? "Править еду" : "Добавить еду"}
             onClose={onClose}
             theme={theme}
         >
@@ -340,11 +340,11 @@ function MealForm({
     return (
         <>
             <Field
-                label="Description"
+                label="Описание"
                 value={description}
                 onChange={setDescription}
                 theme={theme}
-                placeholder="What was on the plate?"
+                placeholder="Что было на тарелке?"
             />
             <View style={styles.typeRow}>
                 {MEAL_TYPES.map((t) => {
@@ -385,7 +385,7 @@ function MealForm({
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field
-                        label="kcal"
+                        label="ккал"
                         value={calories}
                         onChange={setCalories}
                         theme={theme}
@@ -394,7 +394,7 @@ function MealForm({
                 </View>
                 <View style={styles.numCell}>
                     <Field
-                        label="Protein g"
+                        label="Белки, г"
                         value={protein}
                         onChange={setProtein}
                         theme={theme}
@@ -405,7 +405,7 @@ function MealForm({
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field
-                        label="Carbs g"
+                        label="Углеводы, г"
                         value={carbs}
                         onChange={setCarbs}
                         theme={theme}
@@ -414,7 +414,7 @@ function MealForm({
                 </View>
                 <View style={styles.numCell}>
                     <Field
-                        label="Fat g"
+                        label="Жиры, г"
                         value={fat}
                         onChange={setFat}
                         theme={theme}
@@ -424,7 +424,7 @@ function MealForm({
             </View>
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
-                    Check the description and numbers, then try again.
+                    Проверь описание и числа, потом попробуй снова.
                 </Text>
             )}
             <SheetActions
@@ -455,7 +455,7 @@ export function WeightEditor({
     return (
         <Sheet
             visible={visible}
-            title={entry ? "Edit weigh-in" : "Log weight"}
+            title={entry ? "Править взвешивание" : "Записать вес"}
             onClose={onClose}
             theme={theme}
         >
@@ -513,7 +513,7 @@ function WeightForm({
     return (
         <>
             <Field
-                label="Weight, kg"
+                label="Вес, кг"
                 value={kg}
                 onChange={setKg}
                 theme={theme}
@@ -522,7 +522,7 @@ function WeightForm({
             />
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
-                    Enter a weight like 78.2.
+                    Введи вес вида 78.2.
                 </Text>
             )}
             <SheetActions
@@ -552,7 +552,7 @@ export function GoalsEditor({
     return (
         <Sheet
             visible={visible}
-            title="Daily goals"
+            title="Дневные цели"
             onClose={onClose}
             theme={theme}
         >
@@ -610,7 +610,7 @@ function GoalsForm({
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field
-                        label="Calories"
+                        label="Калории"
                         value={calories}
                         onChange={setCalories}
                         theme={theme}
@@ -619,7 +619,7 @@ function GoalsForm({
                 </View>
                 <View style={styles.numCell}>
                     <Field
-                        label="Water, ml"
+                        label="Вода, мл"
                         value={water}
                         onChange={setWater}
                         theme={theme}
@@ -630,7 +630,7 @@ function GoalsForm({
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field
-                        label="Protein g"
+                        label="Белки, г"
                         value={protein}
                         onChange={setProtein}
                         theme={theme}
@@ -639,7 +639,7 @@ function GoalsForm({
                 </View>
                 <View style={styles.numCell}>
                     <Field
-                        label="Carbs g"
+                        label="Углеводы, г"
                         value={carbs}
                         onChange={setCarbs}
                         theme={theme}
@@ -650,7 +650,7 @@ function GoalsForm({
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field
-                        label="Fat g"
+                        label="Жиры, г"
                         value={fat}
                         onChange={setFat}
                         theme={theme}
@@ -659,7 +659,7 @@ function GoalsForm({
                 </View>
                 <View style={styles.numCell}>
                     <Field
-                        label="Target weight, kg"
+                        label="Целевой вес, кг"
                         value={target}
                         onChange={setTarget}
                         theme={theme}
@@ -668,11 +668,11 @@ function GoalsForm({
                 </View>
             </View>
             <Text style={[styles.hint, { color: theme.inkMuted }]}>
-                Leave a field empty to clear that goal.
+                Оставь поле пустым, чтобы убрать эту цель.
             </Text>
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
-                    Numbers only — check the values and try again.
+                    Только числа — проверь значения и попробуй снова.
                 </Text>
             )}
             <SheetActions

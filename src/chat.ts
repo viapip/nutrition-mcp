@@ -506,7 +506,10 @@ export async function runChatTurn(
             role: "system",
             content:
                 "You are the assistant inside a personal nutrition-tracking app. " +
-                "Log meals, water and weight with the tools when the user reports them; " +
+                "Log meals, water and weight with the tools when the user reports them. " +
+                "CRITICAL: data is saved ONLY by tool calls. Never say an entry was logged, " +
+                "updated or deleted unless the corresponding tool returned success in this turn; " +
+                "if you did not call the tool, call it now instead of answering. " +
                 "consult get_dashboard before answering questions about today or progress, and get_day for past dates. " +
                 "To correct or remove an entry, find its id via get_dashboard/get_day first, then use the update/delete tools. " +
                 "Estimate calories/macros yourself when the user doesn't give numbers, and say you estimated. " +
@@ -554,7 +557,7 @@ export async function runChatTurn(
         // A retry after a partial success would double-log (idempotency keys
         // include a fresh logged_at), so degrade to a canned confirmation.
         if (logged) {
-            return "Done — but I couldn't finish a reply. Check the dashboard.";
+            return "Записал — но ответ не дописался. Загляни в дашборд.";
         }
         throw err;
     }

@@ -45,12 +45,12 @@ function KeyStatus({ hasKey, theme }: { hasKey: boolean; theme: Theme }) {
             />
             <View style={styles.statusText}>
                 <Text style={[styles.statusTitle, { color: theme.ink }]}>
-                    {hasKey ? "Your own key" : "Shared key"}
+                    {hasKey ? "Свой ключ" : "Общий ключ"}
                 </Text>
                 <Text style={[styles.statusHint, { color: theme.inkMuted }]}>
                     {hasKey
-                        ? "Assistant requests are billed to your provider account."
-                        : "You're on the server's key — fine to use, shared limits apply."}
+                        ? "Запросы ассистента оплачиваются с твоего аккаунта провайдера."
+                        : "Ты на серверном ключе — пользуйся, лимиты общие."}
                 </Text>
             </View>
         </View>
@@ -91,14 +91,16 @@ export default function SettingsScreen() {
             setHasKey(s.has_llm_key);
             setChatAvailable(s.chat_available);
             setKey("");
-            setNote(value ? "Key saved." : "Key removed.");
+            setNote(value ? "Ключ сохранён." : "Ключ удалён.");
             successBuzz();
         } catch (err) {
             if (err instanceof Error && err.message === "unauthorized") {
                 router.replace("/login");
                 return;
             }
-            setNote("Couldn't save — check the key and try again.");
+            setNote(
+                "Не получилось сохранить — проверь ключ и попробуй ещё раз.",
+            );
         } finally {
             setBusy(false);
         }
@@ -116,7 +118,7 @@ export default function SettingsScreen() {
                         <View style={styles.header}>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel="Back to dashboard"
+                                accessibilityLabel="Назад к дашборду"
                                 onPress={() => router.back()}
                                 hitSlop={12}
                             >
@@ -126,29 +128,29 @@ export default function SettingsScreen() {
                                         { color: theme.accent },
                                     ]}
                                 >
-                                    ← Today
+                                    ← Сегодня
                                 </Text>
                             </Pressable>
                         </View>
 
                         {/* Hero */}
                         <Text style={[styles.hero, { color: theme.ink }]}>
-                            Your kitchen,{"\n"}
+                            Твоя кухня,{"\n"}
                             <Text
                                 style={[
                                     styles.heroItalic,
                                     { color: theme.accent },
                                 ]}
                             >
-                                your key.
+                                твой ключ.
                             </Text>
                         </Text>
                         <Text
                             style={[styles.heroHint, { color: theme.inkMuted }]}
                         >
-                            The assistant talks to an LLM provider on every
-                            message. Bring your own API key to pay for exactly
-                            what you use.
+                            Ассистент ходит к LLM-провайдеру на каждое
+                            сообщение. Добавь свой API-ключ, чтобы платить ровно
+                            за то, что используешь.
                         </Text>
 
                         {/* No key anywhere → the danger note below explains */}
@@ -162,8 +164,8 @@ export default function SettingsScreen() {
                                     { color: theme.danger },
                                 ]}
                             >
-                                No server key is configured — the assistant is
-                                off until you add a key.
+                                Серверный ключ не настроен — ассистент выключен,
+                                пока не добавишь свой.
                             </Text>
                         )}
 
@@ -175,7 +177,7 @@ export default function SettingsScreen() {
                                     { color: theme.inkSecondary },
                                 ]}
                             >
-                                {hasKey ? "Replace key" : "API key"}
+                                {hasKey ? "Заменить ключ" : "API-ключ"}
                             </Text>
                             <TextInput
                                 style={[
@@ -205,10 +207,10 @@ export default function SettingsScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                Stored on your server, never shown again.
-                                Moonshot keys work out of the box; any
-                                OpenAI-compatible provider the server points at
-                                will too.
+                                Хранится на твоём сервере и больше не
+                                показывается. Ключи Kimi/Moonshot работают из
+                                коробки; подойдёт любой OpenAI-совместимый
+                                провайдер, на который смотрит сервер.
                             </Text>
                             <Pressable
                                 accessibilityRole="button"
@@ -231,7 +233,7 @@ export default function SettingsScreen() {
                                         { color: theme.onAccent },
                                     ]}
                                 >
-                                    {busy ? "Saving…" : "Save key"}
+                                    {busy ? "Сохраняю…" : "Сохранить ключ"}
                                 </Text>
                             </Pressable>
                             {hasKey && (
@@ -250,7 +252,7 @@ export default function SettingsScreen() {
                                             { color: theme.danger },
                                         ]}
                                     >
-                                        Remove my key
+                                        Удалить мой ключ
                                     </Text>
                                 </Pressable>
                             )}
@@ -259,7 +261,9 @@ export default function SettingsScreen() {
                                     style={[
                                         styles.note,
                                         {
-                                            color: note.startsWith("Couldn't")
+                                            color: note.startsWith(
+                                                "Не получилось",
+                                            )
                                                 ? theme.danger
                                                 : theme.accent,
                                         },
@@ -291,7 +295,7 @@ export default function SettingsScreen() {
                                     { color: theme.inkSecondary },
                                 ]}
                             >
-                                Log out
+                                Выйти
                             </Text>
                         </Pressable>
                     </View>

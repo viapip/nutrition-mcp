@@ -226,5 +226,5 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
         [{ role: "user", content: "log 300 ml water" }],
         "test-key",
     );
-    expect(reply).toContain("Done —");
+    expect(reply).toContain("Записал —");
 });

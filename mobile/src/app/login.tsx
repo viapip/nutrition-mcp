@@ -45,8 +45,8 @@ export default function LoginScreen() {
         } catch {
             setError(
                 mode === "signin"
-                    ? "Wrong email or password. Try again."
-                    : "Couldn't create the account — check the fields (and the invite code, if the server requires one).",
+                    ? "Неверная почта или пароль. Попробуй ещё раз."
+                    : "Не получилось создать аккаунт — проверь поля (и инвайт-код, если он нужен).",
             );
         } finally {
             setBusy(false);
@@ -61,14 +61,14 @@ export default function LoginScreen() {
                         NUTRITION MCP
                     </Text>
                     <Text style={[styles.title, { color: theme.ink }]}>
-                        Your table,{"\n"}
+                        Твой стол,{"\n"}
                         <Text
                             style={[
                                 styles.titleItalic,
                                 { color: theme.accent },
                             ]}
                         >
-                            kept honest.
+                            по-честному.
                         </Text>
                     </Text>
 
@@ -82,7 +82,7 @@ export default function LoginScreen() {
                                     color: theme.ink,
                                 },
                             ]}
-                            placeholder="Email"
+                            placeholder="Почта"
                             placeholderTextColor={theme.inkMuted}
                             cursorColor={theme.accent}
                             selectionColor={theme.accent}
@@ -101,7 +101,7 @@ export default function LoginScreen() {
                                     color: theme.ink,
                                 },
                             ]}
-                            placeholder="Password"
+                            placeholder="Пароль"
                             placeholderTextColor={theme.inkMuted}
                             cursorColor={theme.accent}
                             selectionColor={theme.accent}
@@ -121,7 +121,7 @@ export default function LoginScreen() {
                                         color: theme.ink,
                                     },
                                 ]}
-                                placeholder="Invite code (if you were given one)"
+                                placeholder="Инвайт-код (если он у тебя есть)"
                                 placeholderTextColor={theme.inkMuted}
                                 cursorColor={theme.accent}
                                 selectionColor={theme.accent}
@@ -157,10 +157,10 @@ export default function LoginScreen() {
                                 ]}
                             >
                                 {busy
-                                    ? "One moment…"
+                                    ? "Секунду…"
                                     : mode === "signin"
-                                      ? "Sign in"
-                                      : "Create account"}
+                                      ? "Войти"
+                                      : "Создать аккаунт"}
                             </Text>
                         </Pressable>
                         <Pressable
@@ -179,15 +179,14 @@ export default function LoginScreen() {
                                 ]}
                             >
                                 {mode === "signin"
-                                    ? "New here? Create an account"
-                                    : "Have an account? Sign in"}
+                                    ? "Впервые тут? Создать аккаунт"
+                                    : "Уже есть аккаунт? Войти"}
                             </Text>
                         </Pressable>
                     </View>
 
                     <Text style={[styles.footnote, { color: theme.inkMuted }]}>
-                        Snap your plate, tell the assistant — the table keeps
-                        the score.
+                        Сфоткай тарелку, расскажи ассистенту — стол ведёт счёт.
                     </Text>
                 </View>
             </KeyboardAvoidingView>

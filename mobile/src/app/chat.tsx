@@ -31,8 +31,8 @@ import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const SUGGESTIONS = [
     "I had a bowl of oatmeal with berries",
-    "Log 300 ml of water",
-    "How am I doing today?",
+    "Запиши 300 мл воды",
+    "Как у меня дела сегодня?",
 ];
 
 function messageText(m: ChatMessage): string {
@@ -112,18 +112,18 @@ function storable(messages: ChatMessage[]): ChatMessage[] {
 
 /** What the typing bubble says while the assistant runs a tool. */
 const TOOL_STATUS: Record<string, string> = {
-    log_meal: "Logging the meal…",
-    log_water: "Logging water…",
-    log_weight: "Logging weight…",
-    get_dashboard: "Checking your day…",
-    get_day: "Looking back…",
-    update_meal: "Fixing the entry…",
-    delete_meal: "Removing it…",
-    delete_water: "Removing it…",
-    update_weight: "Fixing the entry…",
-    delete_weight: "Removing it…",
-    set_goals: "Updating goals…",
-    lookup_barcode: "Reading the barcode…",
+    log_meal: "Записываю еду…",
+    log_water: "Записываю воду…",
+    log_weight: "Записываю вес…",
+    get_dashboard: "Смотрю твой день…",
+    get_day: "Заглядываю в прошлое…",
+    update_meal: "Правлю запись…",
+    delete_meal: "Убираю…",
+    delete_water: "Убираю…",
+    update_weight: "Правлю запись…",
+    delete_weight: "Убираю…",
+    set_goals: "Обновляю цели…",
+    lookup_barcode: "Читаю штрихкод…",
 };
 
 function TypingDots({ theme }: { theme: Theme }) {
@@ -210,7 +210,7 @@ export default function ChatScreen() {
         if (!base64) return;
         const dataUrl = `data:image/jpeg;base64,${base64}`;
         if (dataUrl.length > MAX_IMAGE_CHARS) {
-            notify("Photo too large", "Pick a smaller photo or crop it.");
+            notify("Фото слишком большое", "Выбери поменьше или обрежь.");
             return;
         }
         setPendingImage(dataUrl);
@@ -252,10 +252,10 @@ export default function ChatScreen() {
             void pickImage(false);
             return;
         }
-        Alert.alert("Add a photo", undefined, [
-            { text: "Camera", onPress: () => void pickImage(true) },
-            { text: "Photo library", onPress: () => void pickImage(false) },
-            { text: "Cancel", style: "cancel" },
+        Alert.alert("Добавить фото", undefined, [
+            { text: "Камера", onPress: () => void pickImage(true) },
+            { text: "Галерея", onPress: () => void pickImage(false) },
+            { text: "Отмена", style: "cancel" },
         ]);
     };
 
@@ -280,7 +280,7 @@ export default function ChatScreen() {
         try {
             const reply = await sendChat(
                 slimHistory(next),
-                (name) => setStatus(TOOL_STATUS[name] ?? "Working…"),
+                (name) => setStatus(TOOL_STATUS[name] ?? "Думаю…"),
                 ctrl.signal,
             );
             successBuzz();
@@ -295,11 +295,11 @@ export default function ChatScreen() {
                         content:
                             err instanceof Error &&
                             err.message === "unauthorized"
-                                ? "Session expired — log in again."
+                                ? "Сессия истекла — войди заново."
                                 : err instanceof Error &&
                                     err.message === "chat_not_configured"
-                                  ? "The assistant needs an API key — add yours in Settings."
-                                  : "That didn't go through — try again.",
+                                  ? "Ассистенту нужен API-ключ — добавь свой в настройках."
+                                  : "Не получилось — попробуй ещё раз.",
                     },
                 ]);
             }
@@ -320,24 +320,24 @@ export default function ChatScreen() {
                     <View style={styles.header}>
                         <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel="Back to dashboard"
+                            accessibilityLabel="Назад к дашборду"
                             onPress={() => router.back()}
                             hitSlop={12}
                         >
                             <Text
                                 style={[styles.back, { color: theme.accent }]}
                             >
-                                ← Today
+                                ← Сегодня
                             </Text>
                         </Pressable>
                         <Text
                             style={[styles.headerTitle, { color: theme.ink }]}
                         >
-                            Assistant
+                            Ассистент
                         </Text>
                         <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel="Clear conversation"
+                            accessibilityLabel="Очистить переписку"
                             onPress={clearChat}
                             hitSlop={12}
                             disabled={messages.length === 0}
@@ -354,7 +354,7 @@ export default function ChatScreen() {
                                     },
                                 ]}
                             >
-                                Clear
+                                Очистить
                             </Text>
                         </Pressable>
                     </View>
@@ -375,14 +375,14 @@ export default function ChatScreen() {
                                         { color: theme.ink },
                                     ]}
                                 >
-                                    Tell me{"\n"}
+                                    Расскажи,{"\n"}
                                     <Text
                                         style={[
                                             styles.emptyItalic,
                                             { color: theme.accent },
                                         ]}
                                     >
-                                        what you ate.
+                                        что на тарелке.
                                     </Text>
                                 </Text>
                                 <Text
@@ -392,7 +392,7 @@ export default function ChatScreen() {
                                     ]}
                                 >
                                     {
-                                        "Type it, or snap a photo of the plate — I'll estimate and log it."
+                                        "Напиши текстом или сфоткай тарелку — я прикину и запишу."
                                     }
                                 </Text>
                                 <View style={styles.chips}>
@@ -518,7 +518,7 @@ export default function ChatScreen() {
                             />
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel="Remove photo"
+                                accessibilityLabel="Убрать фото"
                                 onPress={() => setPendingImage(null)}
                                 style={[
                                     styles.previewRemove,
@@ -546,7 +546,7 @@ export default function ChatScreen() {
                     >
                         <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel="Attach a photo"
+                            accessibilityLabel="Прикрепить фото"
                             onPress={attach}
                             style={[
                                 styles.attach,
@@ -574,7 +574,7 @@ export default function ChatScreen() {
                                     color: theme.ink,
                                 },
                             ]}
-                            placeholder="A plate, a snack, a weigh-in…"
+                            placeholder="Тарелка, перекус, взвешивание…"
                             placeholderTextColor={theme.inkMuted}
                             cursorColor={theme.accent}
                             selectionColor={theme.accent}
@@ -586,7 +586,7 @@ export default function ChatScreen() {
                         <Pressable
                             accessibilityRole="button"
                             accessibilityLabel={
-                                busy ? "Stop generating" : "Send"
+                                busy ? "Остановить" : "Отправить"
                             }
                             onPress={() =>
                                 busy ? abortRef.current?.abort() : void send()

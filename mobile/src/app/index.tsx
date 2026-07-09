@@ -35,16 +35,16 @@ import {
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const MEAL_LABEL: Record<string, string> = {
-    breakfast: "Breakfast",
-    lunch: "Lunch",
-    dinner: "Dinner",
-    snack: "Snack",
+    breakfast: "Завтрак",
+    lunch: "Обед",
+    dinner: "Ужин",
+    snack: "Перекус",
 };
 
 const WATER_PRESETS = [150, 250, 500];
 
 function formatDate(iso: string): string {
-    return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", {
+    return new Date(`${iso}T12:00:00`).toLocaleDateString("ru-RU", {
         weekday: "long",
         month: "long",
         day: "numeric",
@@ -52,7 +52,7 @@ function formatDate(iso: string): string {
 }
 
 function formatTime(iso: string): string {
-    return new Date(iso).toLocaleTimeString("en-US", {
+    return new Date(iso).toLocaleTimeString("ru-RU", {
         hour: "numeric",
         minute: "2-digit",
     });
@@ -182,11 +182,11 @@ export default function DashboardScreen() {
                 ]}
             >
                 <Text style={[styles.retryTitle, { color: theme.ink }]}>
-                    Can’t reach{"\n"}
-                    <Text style={{ color: theme.accent }}>the kitchen.</Text>
+                    Кухня{"\n"}
+                    <Text style={{ color: theme.accent }}>не отвечает.</Text>
                 </Text>
                 <Text style={[styles.retryHint, { color: theme.inkMuted }]}>
-                    Check your connection — your data is safe on the server.
+                    Проверь соединение — данные целы на сервере.
                 </Text>
                 <Pressable
                     accessibilityRole="button"
@@ -201,7 +201,7 @@ export default function DashboardScreen() {
                     ]}
                 >
                     <Text style={[styles.retryText, { color: theme.ink }]}>
-                        Try again
+                        Повторить
                     </Text>
                 </Pressable>
             </SafeAreaView>
@@ -234,7 +234,7 @@ export default function DashboardScreen() {
                     </Text>
                     <View style={styles.titleRow}>
                         <Text style={[styles.h1, { color: theme.ink }]}>
-                            Today
+                            Сегодня
                         </Text>
                         <View style={styles.headerActions}>
                             <Pressable
@@ -248,7 +248,7 @@ export default function DashboardScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    Settings
+                                    Настройки
                                 </Text>
                             </Pressable>
                             <Pressable
@@ -262,7 +262,7 @@ export default function DashboardScreen() {
                                         { color: theme.accent },
                                     ]}
                                 >
-                                    Goals
+                                    Цели
                                 </Text>
                             </Pressable>
                         </View>
@@ -290,7 +290,7 @@ export default function DashboardScreen() {
                             <Text
                                 style={[styles.heroValue, { color: theme.ink }]}
                             >
-                                {data.calories.eaten.toLocaleString("en-US")}
+                                {data.calories.eaten.toLocaleString("ru-RU")}
                             </Text>
                             {data.calories.goal != null && (
                                 <Text
@@ -300,8 +300,8 @@ export default function DashboardScreen() {
                                     ]}
                                 >
                                     of{" "}
-                                    {data.calories.goal.toLocaleString("en-US")}{" "}
-                                    kcal
+                                    {data.calories.goal.toLocaleString("ru-RU")}{" "}
+                                    ккал
                                 </Text>
                             )}
                         </View>
@@ -337,7 +337,7 @@ export default function DashboardScreen() {
                         ]}
                     >
                         <MacroRing
-                            label="Protein"
+                            label="Белки"
                             eaten={data.macros.protein.eaten}
                             goal={data.macros.protein.goal}
                             unit="g"
@@ -345,7 +345,7 @@ export default function DashboardScreen() {
                             theme={theme}
                         />
                         <MacroRing
-                            label="Carbs"
+                            label="Углеводы"
                             eaten={data.macros.carbs.eaten}
                             goal={data.macros.carbs.goal}
                             unit="g"
@@ -353,7 +353,7 @@ export default function DashboardScreen() {
                             theme={theme}
                         />
                         <MacroRing
-                            label="Fat"
+                            label="Жиры"
                             eaten={data.macros.fat.eaten}
                             goal={data.macros.fat.goal}
                             unit="g"
@@ -379,7 +379,7 @@ export default function DashboardScreen() {
                                     { color: theme.inkSecondary },
                                 ]}
                             >
-                                Water
+                                Вода
                             </Text>
                             <Text
                                 style={[
@@ -431,7 +431,7 @@ export default function DashboardScreen() {
                                     <Pressable
                                         key={e.id}
                                         accessibilityRole="button"
-                                        accessibilityLabel={`Delete ${e.amount_ml} ml`}
+                                        accessibilityLabel={`Удалить ${e.amount_ml} мл`}
                                         onPress={() => {
                                             tapBuzz();
                                             void removeWater(e.id).then(load);
@@ -494,7 +494,7 @@ export default function DashboardScreen() {
                                     { color: theme.inkSecondary },
                                 ]}
                             >
-                                Weight · 30 days
+                                Вес · 30 дней
                             </Text>
                             {data.weight.current_g != null && (
                                 <Text
@@ -582,7 +582,7 @@ export default function DashboardScreen() {
                     {/* Meals */}
                     <View style={styles.titleRow}>
                         <Text style={[styles.h2, { color: theme.ink }]}>
-                            Meals
+                            Еда
                         </Text>
                         <Pressable
                             accessibilityRole="button"
@@ -597,7 +597,7 @@ export default function DashboardScreen() {
                                     { color: theme.accent },
                                 ]}
                             >
-                                + Add
+                                + Добавить
                             </Text>
                         </Pressable>
                     </View>
@@ -618,8 +618,8 @@ export default function DashboardScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                Nothing logged yet — tell the assistant what you
-                                ate.
+                                Пока пусто — расскажи ассистенту, что было на
+                                тарелке.
                             </Text>
                         )}
                         {data.meals.map((meal, i) => (
@@ -646,7 +646,7 @@ export default function DashboardScreen() {
                                     >
                                         {(
                                             MEAL_LABEL[meal.meal_type ?? ""] ??
-                                            "Meal"
+                                            "Приём"
                                         ).toUpperCase()}
                                         {" · "}
                                         {formatTime(meal.logged_at)}
@@ -695,7 +695,7 @@ export default function DashboardScreen() {
             {/* Assistant FAB */}
             <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Open assistant chat"
+                accessibilityLabel="Открыть чат с ассистентом"
                 onPress={() => router.push("/chat")}
                 style={({ pressed }) => [
                     styles.fab,
@@ -706,7 +706,7 @@ export default function DashboardScreen() {
                 ]}
             >
                 <Text style={[styles.fabText, { color: theme.onAccent }]}>
-                    ✳ Assistant
+                    ✳ Ассистент
                 </Text>
             </Pressable>
 
