@@ -241,7 +241,7 @@ function TypingDots({ theme }: { theme: Theme }) {
                     style={[
                         styles.dot,
                         {
-                            backgroundColor: theme.inkMuted,
+                            backgroundColor: theme.accent,
                             opacity: pulse.interpolate({
                                 inputRange: [0, 1],
                                 outputRange: i === 1 ? [0.9, 0.3] : [0.3, 0.9],
@@ -265,6 +265,8 @@ export default function ChatScreen() {
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
     const [needsKey, setNeedsKey] = useState(false);
+    // Purely visual: paints the input border accent while focused.
+    const [inputFocused, setInputFocused] = useState(false);
     const scrollRef = useRef<ScrollView>(null);
     const abortRef = useRef<AbortController | null>(null);
 
@@ -483,7 +485,10 @@ export default function ChatScreen() {
                             hitSlop={12}
                         >
                             <Text
-                                style={[styles.back, { color: theme.accent }]}
+                                style={[
+                                    styles.back,
+                                    { color: theme.inkSecondary },
+                                ]}
                             >
                                 ← Сегодня
                             </Text>
@@ -525,7 +530,7 @@ export default function ChatScreen() {
                                 styles.keyBanner,
                                 {
                                     backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.danger,
+                                    borderColor: theme.accent,
                                 },
                             ]}
                         >
@@ -585,21 +590,19 @@ export default function ChatScreen() {
                                             key={s}
                                             accessibilityRole="button"
                                             onPress={() => void send(s)}
-                                            style={[
+                                            style={({ pressed }) => [
                                                 styles.chip,
                                                 {
                                                     backgroundColor:
-                                                        theme.surfaceElevated,
-                                                    borderColor: theme.hairline,
+                                                        theme.accentSoft,
                                                 },
+                                                pressed && { opacity: 0.7 },
                                             ]}
                                         >
                                             <Text
                                                 style={[
                                                     styles.chipText,
-                                                    {
-                                                        color: theme.inkSecondary,
-                                                    },
+                                                    { color: theme.accent },
                                                 ]}
                                             >
                                                 {s}
@@ -706,13 +709,16 @@ export default function ChatScreen() {
                                 onPress={() => setPendingImage(null)}
                                 style={[
                                     styles.previewRemove,
-                                    { backgroundColor: theme.ink },
+                                    {
+                                        backgroundColor: theme.surfaceElevated,
+                                        borderColor: theme.hairline,
+                                    },
                                 ]}
                             >
                                 <Text
                                     style={[
                                         styles.previewRemoveText,
-                                        { color: theme.surface },
+                                        { color: theme.ink },
                                     ]}
                                 >
                                     ×
@@ -732,18 +738,16 @@ export default function ChatScreen() {
                             accessibilityRole="button"
                             accessibilityLabel="Прикрепить фото"
                             onPress={attach}
-                            style={[
+                            style={({ pressed }) => [
                                 styles.attach,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                { backgroundColor: theme.accentSoft },
+                                pressed && { transform: [{ scale: 0.92 }] },
                             ]}
                         >
                             <Text
                                 style={[
                                     styles.attachIcon,
-                                    { color: theme.inkSecondary },
+                                    { color: theme.accent },
                                 ]}
                             >
                                 ✚
@@ -754,7 +758,9 @@ export default function ChatScreen() {
                                 styles.input,
                                 {
                                     backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
+                                    borderColor: inputFocused
+                                        ? theme.accent
+                                        : theme.hairline,
                                     color: theme.ink,
                                 },
                             ]}
@@ -765,6 +771,8 @@ export default function ChatScreen() {
                             value={input}
                             onChangeText={setInput}
                             onSubmitEditing={() => void send()}
+                            onFocus={() => setInputFocused(true)}
+                            onBlur={() => setInputFocused(false)}
                             multiline
                         />
                         <Pressable
@@ -789,6 +797,7 @@ export default function ChatScreen() {
                                             !pendingImage)
                                             ? 0.5
                                             : 1,
+                                    transform: [{ scale: pressed ? 0.92 : 1 }],
                                 },
                             ]}
                         >
@@ -834,7 +843,7 @@ const styles = StyleSheet.create({
         marginHorizontal: Spacing.lg,
         marginBottom: Spacing.sm,
         borderWidth: 1,
-        borderRadius: Radii.md,
+        borderRadius: Radii.lg,
         padding: Spacing.md,
     },
     keyBannerText: {
@@ -849,7 +858,7 @@ const styles = StyleSheet.create({
     messages: {
         paddingHorizontal: Spacing.lg,
         paddingVertical: Spacing.md,
-        gap: Spacing.sm,
+        gap: Spacing.md,
     },
     empty: { paddingTop: Spacing.xxl, gap: Spacing.md },
     emptyTitle: {
@@ -861,7 +870,6 @@ const styles = StyleSheet.create({
     emptyHint: { fontFamily: Fonts.sans, fontSize: 14, lineHeight: 20 },
     chips: { gap: Spacing.sm, marginTop: Spacing.sm },
     chip: {
-        borderWidth: 1,
         borderRadius: Radii.lg,
         paddingHorizontal: Spacing.md,
         paddingVertical: 10,
@@ -906,6 +914,7 @@ const styles = StyleSheet.create({
         width: 22,
         height: 22,
         borderRadius: 11,
+        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
     },
@@ -923,7 +932,6 @@ const styles = StyleSheet.create({
         width: 44,
         height: 44,
         borderRadius: 22,
-        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
     },
@@ -933,7 +941,7 @@ const styles = StyleSheet.create({
         fontFamily: Fonts.sans,
         fontSize: 15,
         borderWidth: 1,
-        borderRadius: Radii.lg,
+        borderRadius: Radii.xl,
         paddingHorizontal: Spacing.md,
         paddingVertical: 11,
         maxHeight: 120,

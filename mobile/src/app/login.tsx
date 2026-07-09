@@ -10,6 +10,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import Svg, { Path } from "react-native-svg";
 
 import { login, signup } from "@/lib/api";
 import {
@@ -19,6 +20,19 @@ import {
     Radii,
     Spacing,
 } from "@/constants/theme";
+
+/** Четырёхлучевая янтарная искра — графический акцент бренда. */
+function Spark({ size, color }: { size: number; color: string }) {
+    const c = size / 2;
+    // Контрольные точки у центра делают лучи вогнутыми
+    const w = size * 0.14;
+    const d = `M ${c} 0 C ${c} ${c - w}, ${c + w} ${c}, ${size} ${c} C ${c + w} ${c}, ${c} ${c + w}, ${c} ${size} C ${c} ${c + w}, ${c - w} ${c}, 0 ${c} C ${c - w} ${c}, ${c} ${c - w}, ${c} 0 Z`;
+    return (
+        <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+            <Path d={d} fill={color} />
+        </Svg>
+    );
+}
 
 export default function LoginScreen() {
     const scheme = useColorScheme();
@@ -30,6 +44,13 @@ export default function LoginScreen() {
     const [code, setCode] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [focused, setFocused] = useState<string | null>(null);
+
+    const switchMode = (next: "signin" | "signup") => {
+        if (next === mode) return;
+        setMode(next);
+        setError(null);
+    };
 
     const submit = async () => {
         if (!email || !password || busy) return;
@@ -53,35 +74,80 @@ export default function LoginScreen() {
         }
     };
 
+    const inputStyle = (field: string) => [
+        styles.input,
+        {
+            backgroundColor: theme.surfaceElevated,
+            borderColor: focused === field ? theme.accent : theme.hairline,
+            color: theme.ink,
+        },
+    ];
+
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
             <KeyboardAvoidingView style={styles.flex} behavior="padding">
                 <View style={styles.wrap}>
+                    <Spark size={30} color={theme.accent} />
                     <Text style={[styles.eyebrow, { color: theme.inkMuted }]}>
-                        NUTRITION MCP
+                        ЕДА · ВОДА · ВЕС
                     </Text>
                     <Text style={[styles.title, { color: theme.ink }]}>
-                        Твой стол,{"\n"}
-                        <Text
-                            style={[
-                                styles.titleItalic,
-                                { color: theme.accent },
-                            ]}
-                        >
-                            по-честному.
-                        </Text>
+                        ЕШЬ.{"\n"}ПЕЙ.{"\n"}
+                        <Text style={{ color: theme.accent }}>ВЗВЕСЬСЯ.</Text>
                     </Text>
 
                     <View style={styles.form}>
-                        <TextInput
+                        <View
                             style={[
-                                styles.input,
+                                styles.segment,
                                 {
                                     backgroundColor: theme.surfaceElevated,
                                     borderColor: theme.hairline,
-                                    color: theme.ink,
                                 },
                             ]}
+                        >
+                            {(
+                                [
+                                    ["signin", "Войти"],
+                                    ["signup", "Создать аккаунт"],
+                                ] as const
+                            ).map(([value, label]) => {
+                                const active = mode === value;
+                                return (
+                                    <Pressable
+                                        key={value}
+                                        accessibilityRole="button"
+                                        accessibilityState={{
+                                            selected: active,
+                                        }}
+                                        onPress={() => switchMode(value)}
+                                        style={[
+                                            styles.segItem,
+                                            active && {
+                                                backgroundColor:
+                                                    theme.accentSoft,
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.segText,
+                                                {
+                                                    color: active
+                                                        ? theme.accent
+                                                        : theme.inkMuted,
+                                                },
+                                            ]}
+                                        >
+                                            {label}
+                                        </Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+
+                        <TextInput
+                            style={inputStyle("email")}
                             placeholder="Почта"
                             placeholderTextColor={theme.inkMuted}
                             cursorColor={theme.accent}
@@ -91,16 +157,11 @@ export default function LoginScreen() {
                             keyboardType="email-address"
                             value={email}
                             onChangeText={setEmail}
+                            onFocus={() => setFocused("email")}
+                            onBlur={() => setFocused(null)}
                         />
                         <TextInput
-                            style={[
-                                styles.input,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                    color: theme.ink,
-                                },
-                            ]}
+                            style={inputStyle("password")}
                             placeholder="Пароль"
                             placeholderTextColor={theme.inkMuted}
                             cursorColor={theme.accent}
@@ -110,17 +171,12 @@ export default function LoginScreen() {
                             value={password}
                             onChangeText={setPassword}
                             onSubmitEditing={submit}
+                            onFocus={() => setFocused("password")}
+                            onBlur={() => setFocused(null)}
                         />
                         {mode === "signup" && (
                             <TextInput
-                                style={[
-                                    styles.input,
-                                    {
-                                        backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
-                                        color: theme.ink,
-                                    },
-                                ]}
+                                style={inputStyle("code")}
                                 placeholder="Инвайт-код (если он у тебя есть)"
                                 placeholderTextColor={theme.inkMuted}
                                 cursorColor={theme.accent}
@@ -129,6 +185,8 @@ export default function LoginScreen() {
                                 value={code}
                                 onChangeText={setCode}
                                 onSubmitEditing={submit}
+                                onFocus={() => setFocused("code")}
+                                onBlur={() => setFocused(null)}
                             />
                         )}
                         {error && (
@@ -146,7 +204,10 @@ export default function LoginScreen() {
                                 styles.button,
                                 {
                                     backgroundColor: theme.accent,
-                                    opacity: pressed || busy ? 0.85 : 1,
+                                    opacity: busy ? 0.85 : 1,
+                                    transform: [
+                                        { scale: pressed && !busy ? 0.97 : 1 },
+                                    ],
                                 },
                             ]}
                         >
@@ -161,26 +222,6 @@ export default function LoginScreen() {
                                     : mode === "signin"
                                       ? "Войти"
                                       : "Создать аккаунт"}
-                            </Text>
-                        </Pressable>
-                        <Pressable
-                            accessibilityRole="button"
-                            onPress={() => {
-                                setMode(
-                                    mode === "signin" ? "signup" : "signin",
-                                );
-                                setError(null);
-                            }}
-                        >
-                            <Text
-                                style={[
-                                    styles.switchMode,
-                                    { color: theme.accent },
-                                ]}
-                            >
-                                {mode === "signin"
-                                    ? "Впервые тут? Создать аккаунт"
-                                    : "Уже есть аккаунт? Войти"}
                             </Text>
                         </Pressable>
                     </View>
@@ -204,21 +245,36 @@ const styles = StyleSheet.create({
         alignSelf: "center",
         paddingHorizontal: Spacing.lg,
         justifyContent: "center",
-        gap: Spacing.md,
+        gap: Spacing.sm,
     },
     eyebrow: {
         fontFamily: Fonts.sansSemiBold,
-        fontSize: 12,
-        letterSpacing: 2.5,
+        fontSize: 11,
+        letterSpacing: 3,
+        marginTop: Spacing.md,
     },
     title: {
         fontFamily: Fonts.display,
-        fontSize: 44,
-        lineHeight: 50,
+        fontSize: 34,
+        lineHeight: 43,
+        marginTop: Spacing.xs,
         marginBottom: Spacing.lg,
     },
-    titleItalic: { fontFamily: Fonts.displayLight },
     form: { gap: Spacing.sm },
+    segment: {
+        flexDirection: "row",
+        borderWidth: 1,
+        borderRadius: Radii.xl,
+        padding: Spacing.xs,
+        marginBottom: Spacing.xs,
+    },
+    segItem: {
+        flex: 1,
+        alignItems: "center",
+        paddingVertical: 10,
+        borderRadius: Radii.xl,
+    },
+    segText: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
     input: {
         fontFamily: Fonts.sans,
         fontSize: 16,
@@ -229,18 +285,12 @@ const styles = StyleSheet.create({
     },
     error: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     button: {
-        borderRadius: Radii.md,
-        paddingVertical: 15,
+        borderRadius: Radii.xl,
+        paddingVertical: 16,
         alignItems: "center",
         marginTop: Spacing.sm,
     },
     buttonText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
-    switchMode: {
-        fontFamily: Fonts.sansMedium,
-        fontSize: 14,
-        textAlign: "center",
-        paddingVertical: Spacing.sm,
-    },
     footnote: {
         fontFamily: Fonts.sans,
         fontSize: 13,

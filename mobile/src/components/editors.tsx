@@ -382,7 +382,7 @@ function MealForm({
                                 styles.typeChip,
                                 {
                                     backgroundColor: active
-                                        ? theme.accent
+                                        ? theme.accentSoft
                                         : theme.surface,
                                     borderColor: active
                                         ? theme.accent
@@ -395,8 +395,11 @@ function MealForm({
                                     styles.typeChipText,
                                     {
                                         color: active
-                                            ? theme.onAccent
+                                            ? theme.accent
                                             : theme.inkSecondary,
+                                        fontFamily: active
+                                            ? Fonts.sansSemiBold
+                                            : Fonts.sansMedium,
                                     },
                                 ]}
                             >
@@ -716,7 +719,7 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: "rgba(20, 22, 18, 0.45)",
+        backgroundColor: "rgba(18, 13, 7, 0.55)",
     },
     sheet: {
         width: "100%",
@@ -739,7 +742,7 @@ const styles = StyleSheet.create({
         borderRadius: 2,
         marginTop: -Spacing.sm,
     },
-    sheetTitle: { fontFamily: Fonts.display, fontSize: 24 },
+    sheetTitle: { fontFamily: Fonts.display, fontSize: 19, lineHeight: 26 },
     field: { gap: 6, flex: 1 },
     fieldLabel: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     input: {
@@ -769,7 +772,7 @@ const styles = StyleSheet.create({
     },
     deleteBtn: {
         borderWidth: 1,
-        borderRadius: Radii.md,
+        borderRadius: Radii.xl,
         paddingVertical: 14,
         paddingHorizontal: Spacing.lg,
         alignItems: "center",
@@ -777,7 +780,7 @@ const styles = StyleSheet.create({
     deleteText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     saveBtn: {
         flex: 1,
-        borderRadius: Radii.md,
+        borderRadius: Radii.xl,
         paddingVertical: 14,
         alignItems: "center",
     },

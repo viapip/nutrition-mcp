@@ -30,19 +30,37 @@ function KeyStatus({ hasKey, theme }: { hasKey: boolean; theme: Theme }) {
             style={[
                 styles.status,
                 {
-                    backgroundColor: theme.surfaceElevated,
+                    backgroundColor: hasKey
+                        ? theme.accentSoft
+                        : theme.surfaceElevated,
                     borderColor: hasKey ? theme.accent : theme.hairline,
                 },
             ]}
         >
             <View
                 style={[
-                    styles.statusDot,
-                    {
-                        backgroundColor: hasKey ? theme.accent : theme.inkMuted,
-                    },
+                    styles.statusHalo,
+                    hasKey && { backgroundColor: theme.accentSoft },
                 ]}
-            />
+            >
+                <View
+                    style={[
+                        styles.statusDot,
+                        {
+                            backgroundColor: hasKey
+                                ? theme.accent
+                                : theme.inkMuted,
+                        },
+                        hasKey && {
+                            shadowColor: theme.accent,
+                            shadowOpacity: 0.9,
+                            shadowRadius: 6,
+                            shadowOffset: { width: 0, height: 0 },
+                            elevation: 6,
+                        },
+                    ]}
+                />
+            </View>
             <View style={styles.statusText}>
                 <Text style={[styles.statusTitle, { color: theme.ink }]}>
                     {hasKey ? "Свой ключ" : "Общий ключ"}
@@ -66,6 +84,7 @@ export default function SettingsScreen() {
     const [key, setKey] = useState("");
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<string | null>(null);
+    const [focused, setFocused] = useState(false);
 
     useEffect(() => {
         getSettings()
@@ -134,16 +153,14 @@ export default function SettingsScreen() {
                         </View>
 
                         {/* Hero */}
+                        <Text
+                            style={[styles.eyebrow, { color: theme.inkMuted }]}
+                        >
+                            КУХНЯ · ДОСТУП
+                        </Text>
                         <Text style={[styles.hero, { color: theme.ink }]}>
-                            Твоя кухня,{"\n"}
-                            <Text
-                                style={[
-                                    styles.heroItalic,
-                                    { color: theme.accent },
-                                ]}
-                            >
-                                твой ключ.
-                            </Text>
+                            ТВОЙ{"\n"}
+                            <Text style={{ color: theme.accent }}>КЛЮЧ.</Text>
                         </Text>
                         <Text
                             style={[styles.heroHint, { color: theme.inkMuted }]}
@@ -184,7 +201,9 @@ export default function SettingsScreen() {
                                     styles.input,
                                     {
                                         backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
+                                        borderColor: focused
+                                            ? theme.accent
+                                            : theme.hairline,
                                         color: theme.ink,
                                     },
                                 ]}
@@ -200,6 +219,8 @@ export default function SettingsScreen() {
                                 autoCapitalize="none"
                                 autoCorrect={false}
                                 secureTextEntry
+                                onFocus={() => setFocused(true)}
+                                onBlur={() => setFocused(false)}
                             />
                             <Text
                                 style={[
@@ -216,16 +237,24 @@ export default function SettingsScreen() {
                                 accessibilityRole="button"
                                 onPress={() => void save(key.trim())}
                                 disabled={busy || !key.trim()}
-                                style={({ pressed }) => [
-                                    styles.saveBtn,
-                                    {
-                                        backgroundColor: theme.accent,
-                                        opacity:
-                                            pressed || busy || !key.trim()
-                                                ? 0.5
-                                                : 1,
-                                    },
-                                ]}
+                                style={({ pressed }) => {
+                                    const off = busy || !key.trim();
+                                    return [
+                                        styles.saveBtn,
+                                        {
+                                            backgroundColor: theme.accent,
+                                            opacity: off ? 0.5 : 1,
+                                            transform: [
+                                                {
+                                                    scale:
+                                                        pressed && !off
+                                                            ? 0.97
+                                                            : 1,
+                                                },
+                                            ],
+                                        },
+                                    ];
+                                }}
                             >
                                 <Text
                                     style={[
@@ -283,11 +312,16 @@ export default function SettingsScreen() {
                         />
                         <Pressable
                             accessibilityRole="button"
+                            accessibilityLabel="Выйти из аккаунта"
                             onPress={async () => {
                                 await logout();
                                 router.replace("/login");
                             }}
                             hitSlop={8}
+                            style={({ pressed }) => [
+                                styles.logoutRow,
+                                { opacity: pressed ? 0.6 : 1 },
+                            ]}
                         >
                             <Text
                                 style={[
@@ -296,6 +330,14 @@ export default function SettingsScreen() {
                                 ]}
                             >
                                 Выйти
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.logoutArrow,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                →
                             </Text>
                         </Pressable>
                     </View>
@@ -319,13 +361,18 @@ const styles = StyleSheet.create({
     },
     header: { paddingVertical: Spacing.sm },
     back: { fontFamily: Fonts.sansMedium, fontSize: 15 },
-    hero: {
-        fontFamily: Fonts.display,
-        fontSize: 36,
-        lineHeight: 42,
+    eyebrow: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 11,
+        letterSpacing: 3,
         marginTop: Spacing.lg,
     },
-    heroItalic: { fontFamily: Fonts.displayLight },
+    hero: {
+        fontFamily: Fonts.display,
+        fontSize: 34,
+        lineHeight: 43,
+        marginTop: Spacing.xs,
+    },
     heroHint: {
         fontFamily: Fonts.sans,
         fontSize: 14,
@@ -341,7 +388,14 @@ const styles = StyleSheet.create({
         padding: Spacing.md,
         marginTop: Spacing.lg,
     },
-    statusDot: { width: 10, height: 10, borderRadius: 5 },
+    statusHalo: {
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    statusDot: { width: 12, height: 12, borderRadius: 6 },
     statusText: { flex: 1, gap: 2 },
     statusTitle: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     statusHint: { fontFamily: Fonts.sans, fontSize: 13, lineHeight: 18 },
@@ -357,8 +411,8 @@ const styles = StyleSheet.create({
     },
     fieldHint: { fontFamily: Fonts.sans, fontSize: 12, lineHeight: 17 },
     saveBtn: {
-        borderRadius: Radii.lg,
-        paddingVertical: 14,
+        borderRadius: Radii.xl,
+        paddingVertical: 16,
         alignItems: "center",
         marginTop: Spacing.sm,
     },
@@ -367,5 +421,11 @@ const styles = StyleSheet.create({
     removeText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     note: { fontFamily: Fonts.sansMedium, fontSize: 14, textAlign: "center" },
     divider: { height: 1, marginVertical: Spacing.xl },
+    logoutRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+    },
     logout: { fontFamily: Fonts.sansMedium, fontSize: 15 },
+    logoutArrow: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
 });

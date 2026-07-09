@@ -1,53 +1,57 @@
 import { Platform } from "react-native";
 
 /**
- * Editorial-organic theme: warm paper surfaces, forest-green brand ink.
- * Chart hues validated with dataviz six-checks (CVD, chroma, contrast)
- * per mode — do not eyeball-adjust protein/carbs/fat/water values.
+ * «Ember» — dark-first: раскалённый янтарь на тёплом угле.
+ * Дисплей — Unbounded (широкая геометрика, кириллица), текст — Golos Text.
+ * Chart hues validated with dataviz six-checks (CVD, chroma, lightness band,
+ * contrast) per mode — do not eyeball-adjust protein/carbs/fat/water values.
+ * Text tokens hold WCAG >=4.5:1 on their surfaces (computed, not eyeballed).
  */
 export const Colors = {
     light: {
-        surface: "#f7f2e9",
-        surfaceElevated: "#fffcf5",
-        ink: "#20261f",
-        inkSecondary: "#5a6154",
-        // 4.5:1 on surface — muted text stays readable at 12px
-        inkMuted: "#6b7164",
-        hairline: "#e3dccd",
-        accent: "#2e6b45",
-        onAccent: "#f7f2e9",
-        protein: "#2e8b57",
-        carbs: "#b87708",
-        fat: "#c65332",
-        water: "#1d7f8c",
+        surface: "#f6efe3",
+        surfaceElevated: "#ffffff",
+        ink: "#241d12",
+        inkSecondary: "#5f5747",
+        inkMuted: "#6f6757",
+        hairline: "#e7ddca",
+        accent: "#b04b0b",
+        onAccent: "#ffffff",
+        // Прозрачная янтарная подложка для чипов/подсветок
+        accentSoft: "rgba(176, 75, 11, 0.10)",
+        protein: "#1f8f56",
+        carbs: "#a8730a",
+        fat: "#cb3f2e",
+        water: "#0c6f9e",
         danger: "#b3342a",
     },
     dark: {
-        surface: "#191b17",
-        surfaceElevated: "#22251f",
-        ink: "#efeadd",
-        inkSecondary: "#a8ad9e",
-        // 4.5:1 on surfaceElevated; hairline lifted so card borders survive dark
-        inkMuted: "#8b9180",
-        hairline: "#3c4136",
-        accent: "#6fb389",
-        onAccent: "#191b17",
-        protein: "#3d9e63",
-        carbs: "#bf830c",
-        fat: "#cd6540",
-        water: "#2fa3b3",
-        danger: "#d96a5e",
+        surface: "#16130f",
+        surfaceElevated: "#201c16",
+        ink: "#f2ead9",
+        inkSecondary: "#b3a892",
+        inkMuted: "#a1977f",
+        hairline: "#3a332a",
+        accent: "#ffa64d",
+        onAccent: "#241304",
+        accentSoft: "rgba(255, 166, 77, 0.13)",
+        protein: "#2fa163",
+        carbs: "#bd8a14",
+        fat: "#d4553a",
+        water: "#2596b3",
+        danger: "#f07868",
     },
 } as const;
 
 export type Theme = { [K in keyof (typeof Colors)["light"]]: string };
 
 export const Fonts = {
-    display: "Fraunces_600SemiBold",
-    displayLight: "Fraunces_300Light_Italic",
-    sans: "InstrumentSans_400Regular",
-    sansMedium: "InstrumentSans_500Medium",
-    sansSemiBold: "InstrumentSans_600SemiBold",
+    display: "Unbounded_600SemiBold",
+    displayLight: "Unbounded_200ExtraLight",
+    displayBold: "Unbounded_700Bold",
+    sans: "GolosText_400Regular",
+    sansMedium: "GolosText_500Medium",
+    sansSemiBold: "GolosText_600SemiBold",
 } as const;
 
 export const Spacing = {
@@ -60,9 +64,10 @@ export const Spacing = {
 } as const;
 
 export const Radii = {
-    sm: 8,
-    md: 14,
-    lg: 22,
+    sm: 10,
+    md: 16,
+    lg: 24,
+    xl: 32,
 } as const;
 
 export const MaxContentWidth = 560;

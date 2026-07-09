@@ -1,12 +1,13 @@
 import {
-    Fraunces_300Light_Italic,
-    Fraunces_600SemiBold,
-} from "@expo-google-fonts/fraunces";
+    GolosText_400Regular,
+    GolosText_500Medium,
+    GolosText_600SemiBold,
+} from "@expo-google-fonts/golos-text";
 import {
-    InstrumentSans_400Regular,
-    InstrumentSans_500Medium,
-    InstrumentSans_600SemiBold,
-} from "@expo-google-fonts/instrument-sans";
+    Unbounded_200ExtraLight,
+    Unbounded_600SemiBold,
+    Unbounded_700Bold,
+} from "@expo-google-fonts/unbounded";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -23,11 +24,12 @@ export default function RootLayout() {
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
 
     const [loaded, error] = useFonts({
-        Fraunces_300Light_Italic,
-        Fraunces_600SemiBold,
-        InstrumentSans_400Regular,
-        InstrumentSans_500Medium,
-        InstrumentSans_600SemiBold,
+        Unbounded_200ExtraLight,
+        Unbounded_600SemiBold,
+        Unbounded_700Bold,
+        GolosText_400Regular,
+        GolosText_500Medium,
+        GolosText_600SemiBold,
     });
 
     useEffect(() => {

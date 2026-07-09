@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Animated, View, Text, StyleSheet } from "react-native";
+import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, {
     Circle,
     Defs,
@@ -16,12 +16,241 @@ import Svg, {
 import { Fonts, Spacing, TabularNums, type Theme } from "@/constants/theme";
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 /**
  * Chart marks follow dataviz specs: 2px lines, >=8px end markers with a 2px
  * surface ring, bars <=24px with 4px rounded data-ends square at the baseline,
  * 2px surface gaps. Values always direct-labeled (contrast relief channel).
  */
+
+// ---------- Calorie arc (hero gauge) ----------
+
+interface CalorieArcProps {
+    eaten: number;
+    goal: number | null;
+    theme: Theme;
+    width: number;
+}
+
+/** Полукруглый гейдж дня: гигантская цифра внутри дуги. */
+export function CalorieArc({ eaten, goal, theme, width }: CalorieArcProps) {
+    const stroke = 14;
+    const r = Math.min((width - stroke) / 2, 150);
+    const cx = width / 2;
+    const cy = r + stroke / 2;
+    const halfLen = Math.PI * r;
+    const progress = goal ? Math.min(eaten / goal, 1) : 0;
+    const over = goal != null && eaten > goal;
+    const color = over ? theme.danger : theme.accent;
+
+    const [anim] = useState(() => new Animated.Value(0));
+    useEffect(() => {
+        Animated.timing(anim, {
+            toValue: progress,
+            duration: 700,
+            useNativeDriver: false, // svg props can't ride the native driver
+        }).start();
+    }, [progress, anim]);
+    const dashOffset = anim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [halfLen, 0],
+    });
+
+    const d = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
+    const height = cy + stroke / 2;
+
+    return (
+        <View
+            accessible
+            accessibilityLabel={`Калории: ${Math.round(eaten)}${goal ? ` из ${goal}` : ""}`}
+            style={{ width, height }}
+        >
+            <Svg width={width} height={height}>
+                <Path
+                    d={d}
+                    stroke={color}
+                    strokeOpacity={0.16}
+                    strokeWidth={stroke}
+                    strokeLinecap="round"
+                    fill="none"
+                />
+                {goal != null && (
+                    <AnimatedPath
+                        d={d}
+                        stroke={color}
+                        strokeWidth={stroke}
+                        strokeLinecap="round"
+                        fill="none"
+                        strokeDasharray={`${halfLen} ${halfLen}`}
+                        strokeDashoffset={dashOffset}
+                    />
+                )}
+            </Svg>
+            <View style={[arcStyles.center, { width, height }]}>
+                <Text
+                    style={[arcStyles.value, TabularNums, { color: theme.ink }]}
+                >
+                    {Math.round(eaten).toLocaleString("ru-RU")}
+                </Text>
+                <Text style={[arcStyles.caption, { color: theme.inkMuted }]}>
+                    {goal != null
+                        ? `из ${goal.toLocaleString("ru-RU")} ккал`
+                        : "ккал"}
+                </Text>
+            </View>
+        </View>
+    );
+}
+
+const arcStyles = StyleSheet.create({
+    center: {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        alignItems: "center",
+        justifyContent: "flex-end",
+        paddingBottom: 2,
+    },
+    value: {
+        fontFamily: Fonts.displayBold,
+        fontSize: 44,
+        lineHeight: 52,
+    },
+    caption: { fontFamily: Fonts.sansMedium, fontSize: 13, lineHeight: 18 },
+});
+
+// ---------- Week strip ----------
+
+export interface WeekDay {
+    date: string; // YYYY-MM-DD
+    /** null = данных нет (нет цели или ещё грузится) */
+    pct: number | null;
+    over: boolean;
+}
+
+interface WeekStripProps {
+    days: WeekDay[];
+    selected: string;
+    today: string;
+    theme: Theme;
+    width: number;
+    onSelect: (date: string) => void;
+}
+
+function weekdayLetter(iso: string): string {
+    return new Date(`${iso}T12:00:00`)
+        .toLocaleDateString("ru-RU", { weekday: "short" })
+        .slice(0, 2);
+}
+
+/** Неделя одним взглядом: кольцо-прогресс на каждый день, тап — перейти. */
+export function WeekStrip({
+    days,
+    selected,
+    today,
+    theme,
+    width,
+    onSelect,
+}: WeekStripProps) {
+    // Ужимаем кольца на узких экранах, чтобы 7 дней не наехали друг на друга
+    const size = Math.max(
+        24,
+        Math.min(34, Math.floor(width / days.length) - 8),
+    );
+    const strokeW = 3.5;
+    const r = (size - strokeW) / 2;
+    const c = 2 * Math.PI * r;
+
+    return (
+        <View style={weekStyles.row}>
+            {days.map((d) => {
+                const active = d.date === selected;
+                const isToday = d.date === today;
+                const ringColor = d.over ? theme.danger : theme.accent;
+                return (
+                    <Pressable
+                        key={d.date}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`${weekdayLetter(d.date)}, ${d.date}${
+                            d.pct != null
+                                ? `, ${Math.round(d.pct * 100)}% калорий`
+                                : ""
+                        }`}
+                        onPress={() => onSelect(d.date)}
+                        hitSlop={6}
+                        style={weekStyles.day}
+                    >
+                        <View
+                            style={[
+                                weekStyles.ringWrap,
+                                { borderRadius: size / 2 + 2 },
+                                active && {
+                                    backgroundColor: theme.accentSoft,
+                                },
+                            ]}
+                        >
+                            <Svg width={size} height={size}>
+                                <Circle
+                                    cx={size / 2}
+                                    cy={size / 2}
+                                    r={r}
+                                    stroke={theme.hairline}
+                                    strokeWidth={strokeW}
+                                    fill="none"
+                                />
+                                {d.pct != null && d.pct > 0 && (
+                                    <Circle
+                                        cx={size / 2}
+                                        cy={size / 2}
+                                        r={r}
+                                        stroke={ringColor}
+                                        strokeWidth={strokeW}
+                                        fill="none"
+                                        strokeLinecap="round"
+                                        strokeDasharray={`${c} ${c}`}
+                                        strokeDashoffset={
+                                            c * (1 - Math.min(d.pct, 1))
+                                        }
+                                        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+                                    />
+                                )}
+                            </Svg>
+                        </View>
+                        <Text
+                            style={[
+                                weekStyles.letter,
+                                {
+                                    color: active
+                                        ? theme.accent
+                                        : isToday
+                                          ? theme.ink
+                                          : theme.inkMuted,
+                                    fontFamily: active
+                                        ? Fonts.sansSemiBold
+                                        : Fonts.sansMedium,
+                                },
+                            ]}
+                        >
+                            {weekdayLetter(d.date)}
+                        </Text>
+                    </Pressable>
+                );
+            })}
+        </View>
+    );
+}
+
+const weekStyles = StyleSheet.create({
+    row: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+    },
+    day: { alignItems: "center", gap: 4 },
+    ringWrap: { padding: 2 },
+    letter: { fontSize: 11, lineHeight: 14 },
+});
 
 // ---------- Macro ring ----------
 
@@ -96,7 +325,7 @@ export function MacroRing({
                     />
                 )}
             </Svg>
-            <View style={ringStyles.center}>
+            <View style={[ringStyles.center, { height: size }]}>
                 <Text
                     style={[
                         ringStyles.value,
@@ -136,11 +365,10 @@ const ringStyles = StyleSheet.create({
         top: 0,
         left: 0,
         right: 0,
-        height: 92,
         alignItems: "center",
         justifyContent: "center",
     },
-    value: { fontFamily: Fonts.sansSemiBold, fontSize: 20, lineHeight: 24 },
+    value: { fontFamily: Fonts.display, fontSize: 17, lineHeight: 22 },
     unit: { fontFamily: Fonts.sans, fontSize: 11, lineHeight: 14 },
     labelRow: {
         flexDirection: "row",
