@@ -1,7 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Alert,
     Animated,
@@ -26,11 +28,16 @@ import {
     Spacing,
     type Theme,
 } from "@/constants/theme";
-import { sendChat, type ChatMessage, type ChatPart } from "@/lib/api";
+import {
+    getSettings,
+    sendChat,
+    type ChatMessage,
+    type ChatPart,
+} from "@/lib/api";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const SUGGESTIONS = [
-    "I had a bowl of oatmeal with berries",
+    "Овсянка с ягодами на завтрак",
     "Запиши 300 мл воды",
     "Как у меня дела сегодня?",
 ];
@@ -90,6 +97,79 @@ function slimHistory(messages: ChatMessage[]): ChatMessage[] {
     return out;
 }
 
+/**
+ * Photos live on disk as file:// URIs (light enough to persist and restore),
+ * but the server needs data URLs. Inline the surviving photo right before
+ * sending; a missing file degrades to the usual text stub.
+ */
+async function toPayload(messages: ChatMessage[]): Promise<ChatMessage[]> {
+    return Promise.all(
+        messages.map(async (m) => {
+            const image = messageImage(m);
+            if (!image || !image.startsWith("file://")) return m;
+            try {
+                const base64 = await FileSystem.readAsStringAsync(image, {
+                    encoding: FileSystem.EncodingType.Base64,
+                });
+                return {
+                    role: m.role,
+                    content: (m.content as ChatPart[]).map((p) =>
+                        p.type === "image_url"
+                            ? {
+                                  type: "image_url" as const,
+                                  image_url: {
+                                      url: `data:image/jpeg;base64,${base64}`,
+                                  },
+                              }
+                            : p,
+                    ),
+                };
+            } catch {
+                return {
+                    role: m.role,
+                    content: `[photo of food] ${messageText(m)}`.trim(),
+                };
+            }
+        }),
+    );
+}
+
+/**
+ * Reap photo files no message references anymore (history is capped at 60
+ * entries, and a picked-but-never-sent photo leaks its file). Only files
+ * older than an hour are touched — the timestamp lives in the filename —
+ * so anything written this session (including a camera shot recovered
+ * after Android killed the activity) is never swept out from under us.
+ */
+async function sweepOrphanPhotos(referenced: ChatMessage[]): Promise<void> {
+    const dir = FileSystem.documentDirectory;
+    if (Platform.OS === "web" || !dir) return;
+    const keep = new Set(
+        referenced
+            .map((m) => messageImage(m))
+            .filter((u): u is string => !!u?.startsWith("file://"))
+            .map((u) => u.slice(u.lastIndexOf("/") + 1)),
+    );
+    const hourAgo = Date.now() - 3_600_000;
+    try {
+        const names = await FileSystem.readDirectoryAsync(dir);
+        await Promise.all(
+            names
+                .filter((n) => {
+                    const stamp = /^chat-(\d+)\.jpg$/.exec(n)?.[1];
+                    return stamp && !keep.has(n) && Number(stamp) < hourAgo;
+                })
+                .map((n) =>
+                    FileSystem.deleteAsync(`${dir}${n}`, {
+                        idempotent: true,
+                    }),
+                ),
+        );
+    } catch {
+        // best-effort housekeeping; next mount retries
+    }
+}
+
 /** Alert.alert is a no-op on react-native-web, so fall back to window.alert. */
 function notify(title: string, message: string) {
     if (Platform.OS === "web") window.alert(`${title}\n${message}`);
@@ -98,14 +178,19 @@ function notify(title: string, message: string) {
 
 const CHAT_KEY = "nutrition_chat";
 
-/** Photos are megabytes of base64 — persist text stubs, cap the length. */
+/**
+ * file:// photo refs are tiny and persist as-is (so old chats keep their
+ * pictures); raw data URLs (web) are megabytes — those become text stubs.
+ */
 function storable(messages: ChatMessage[]): ChatMessage[] {
     return messages.slice(-60).map((m) => {
         if (typeof m.content === "string") return m;
+        const image = messageImage(m);
+        if (image?.startsWith("file://")) return m;
         const text = messageText(m);
         return {
             role: m.role,
-            content: messageImage(m) ? `[photo of food] ${text}`.trim() : text,
+            content: image ? `[photo of food] ${text}`.trim() : text,
         };
     });
 }
@@ -179,18 +264,32 @@ export default function ChatScreen() {
     const [pendingImage, setPendingImage] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
+    const [needsKey, setNeedsKey] = useState(false);
     const scrollRef = useRef<ScrollView>(null);
     const abortRef = useRef<AbortController | null>(null);
+
+    // Surface "assistant is off" before the first send, not after it fails.
+    // On focus, not mount: the banner leads to settings and must clear on
+    // the way back once a key is saved.
+    useFocusEffect(
+        useCallback(() => {
+            getSettings()
+                .then((s) => setNeedsKey(!s.chat_available && !s.has_llm_key))
+                .catch(() => {});
+        }, []),
+    );
 
     // Restore the conversation, then mirror every change back to storage.
     useEffect(() => {
         AsyncStorage.getItem(CHAT_KEY)
             .then((raw) => {
-                if (!raw) return;
-                const restored = JSON.parse(raw) as ChatMessage[];
-                // The user may have typed before hydration finished — never
-                // clobber a live conversation with the stored one.
-                setMessages((cur) => (cur.length ? cur : restored));
+                const restored = raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+                if (restored.length) {
+                    // The user may have typed before hydration finished —
+                    // never clobber a live conversation with the stored one.
+                    setMessages((cur) => (cur.length ? cur : restored));
+                }
+                void sweepOrphanPhotos(restored);
             })
             .catch(() => {})
             .finally(() => setHydrated(true));
@@ -200,20 +299,85 @@ export default function ChatScreen() {
         void AsyncStorage.setItem(CHAT_KEY, JSON.stringify(storable(messages)));
     }, [messages, hydrated]);
 
-    const clearChat = () => {
+    const wipeChat = () => {
         abortRef.current?.abort();
         setMessages([]);
+        // The pending photo's file is about to be swept with the rest.
+        setPendingImage(null);
         void AsyncStorage.removeItem(CHAT_KEY);
+        // Sweep the photos that belonged to the wiped history.
+        if (Platform.OS !== "web" && FileSystem.documentDirectory) {
+            const dir = FileSystem.documentDirectory;
+            void FileSystem.readDirectoryAsync(dir)
+                .then((names) =>
+                    Promise.all(
+                        names
+                            .filter((n) => n.startsWith("chat-"))
+                            .map((n) =>
+                                FileSystem.deleteAsync(`${dir}${n}`, {
+                                    idempotent: true,
+                                }),
+                            ),
+                    ),
+                )
+                .catch(() => {});
+        }
     };
 
-    const acceptImage = (base64: string | null | undefined) => {
+    const clearChat = () => {
+        if (Platform.OS === "web") {
+            if (window.confirm("Стереть всю переписку?")) wipeChat();
+            return;
+        }
+        Alert.alert("Стереть переписку?", "История и фото удалятся.", [
+            { text: "Отмена", style: "cancel" },
+            { text: "Стереть", style: "destructive", onPress: wipeChat },
+        ]);
+    };
+
+    // Downscale + recompress every photo before it enters the pipeline:
+    // the LLM doesn't need more than ~1280px, and disk/traffic shrink ~10x.
+    const acceptImage = async (
+        asset: { uri: string; width?: number } | undefined,
+    ) => {
+        if (!asset) return;
+        let base64: string | undefined;
+        try {
+            const shrunk = await ImageManipulator.manipulateAsync(
+                asset.uri,
+                asset.width && asset.width > 1280
+                    ? [{ resize: { width: 1280 } }]
+                    : [],
+                {
+                    compress: 0.6,
+                    format: ImageManipulator.SaveFormat.JPEG,
+                    base64: true,
+                },
+            );
+            base64 = shrunk.base64 ?? undefined;
+        } catch {
+            // manipulation can fail on exotic sources — send as-is below
+        }
         if (!base64) return;
-        const dataUrl = `data:image/jpeg;base64,${base64}`;
-        if (dataUrl.length > MAX_IMAGE_CHARS) {
+        if (base64.length + 30 > MAX_IMAGE_CHARS) {
             notify("Фото слишком большое", "Выбери поменьше или обрежь.");
             return;
         }
-        setPendingImage(dataUrl);
+        if (Platform.OS === "web" || !FileSystem.documentDirectory) {
+            setPendingImage(`data:image/jpeg;base64,${base64}`);
+            return;
+        }
+        // To disk: the message then carries a tiny file:// ref that survives
+        // restarts (photos used to vanish from restored chats).
+        const uri = `${FileSystem.documentDirectory}chat-${Date.now()}.jpg`;
+        try {
+            await FileSystem.writeAsStringAsync(uri, base64, {
+                encoding: FileSystem.EncodingType.Base64,
+            });
+            setPendingImage(uri);
+        } catch {
+            setPendingImage(`data:image/jpeg;base64,${base64}`);
+        }
     };
 
     // Android may destroy the activity while the camera is open; recover
@@ -222,7 +386,7 @@ export default function ChatScreen() {
         if (Platform.OS !== "android") return;
         void ImagePicker.getPendingResultAsync().then((r) => {
             if (r && !("code" in r) && !r.canceled) {
-                acceptImage(r.assets?.[0]?.base64);
+                void acceptImage(r.assets?.[0]);
             }
         });
     }, []);
@@ -233,18 +397,12 @@ export default function ChatScreen() {
             : await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) return;
         const result = fromCamera
-            ? await ImagePicker.launchCameraAsync({
-                  mediaTypes: ["images"],
-                  quality: 0.4,
-                  base64: true,
-              })
+            ? await ImagePicker.launchCameraAsync({ mediaTypes: ["images"] })
             : await ImagePicker.launchImageLibraryAsync({
                   mediaTypes: ["images"],
-                  quality: 0.4,
-                  base64: true,
               });
         if (result.canceled) return;
-        acceptImage(result.assets?.[0]?.base64);
+        await acceptImage(result.assets?.[0]);
     };
 
     const attach = () => {
@@ -279,7 +437,7 @@ export default function ChatScreen() {
         abortRef.current = ctrl;
         try {
             const reply = await sendChat(
-                slimHistory(next),
+                await toPayload(slimHistory(next)),
                 (name) => setStatus(TOOL_STATUS[name] ?? "Думаю…"),
                 ctrl.signal,
             );
@@ -358,6 +516,32 @@ export default function ChatScreen() {
                             </Text>
                         </Pressable>
                     </View>
+
+                    {needsKey && (
+                        <Pressable
+                            accessibilityRole="button"
+                            onPress={() => router.push("/settings")}
+                            style={[
+                                styles.keyBanner,
+                                {
+                                    backgroundColor: theme.surfaceElevated,
+                                    borderColor: theme.danger,
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.keyBannerText,
+                                    { color: theme.ink },
+                                ]}
+                            >
+                                Ассистент выключен — нужен API-ключ.{" "}
+                                <Text style={{ color: theme.accent }}>
+                                    Добавить в настройках →
+                                </Text>
+                            </Text>
+                        </Pressable>
+                    )}
 
                     <ScrollView
                         ref={scrollRef}
@@ -646,6 +830,18 @@ const styles = StyleSheet.create({
     },
     back: { fontFamily: Fonts.sansMedium, fontSize: 15 },
     headerTitle: { fontFamily: Fonts.display, fontSize: 20 },
+    keyBanner: {
+        marginHorizontal: Spacing.lg,
+        marginBottom: Spacing.sm,
+        borderWidth: 1,
+        borderRadius: Radii.md,
+        padding: Spacing.md,
+    },
+    keyBannerText: {
+        fontFamily: Fonts.sansMedium,
+        fontSize: 13,
+        lineHeight: 18,
+    },
     headerSpacer: { width: 56, alignItems: "flex-end" },
     clear: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     statusRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },

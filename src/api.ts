@@ -247,15 +247,31 @@ export function createApiRouter() {
         const userId = c.get("userId") as string;
         const tz = await getUserTimezone(userId);
         const today = todayInTz(tz);
+        // ?date=YYYY-MM-DD lets the app browse past days; future is clamped.
+        const q = c.req.query("date");
+        let day = today;
+        if (q !== undefined) {
+            // Regex catches the shape, the round-trip catches 2026-02-31.
+            const real =
+                /^\d{4}-\d{2}-\d{2}$/.test(q) &&
+                new Date(`${q}T12:00:00Z`).toISOString().slice(0, 10) === q;
+            if (!real || q > today) {
+                return c.json({ error: "bad date" }, 400);
+            }
+            day = q;
+        }
         const [meals, water, weights, latest, goals] = await Promise.all([
-            getMealsByDate(userId, today, tz),
-            getWaterByDate(userId, today, tz),
-            getWeightInRange(userId, shiftLocalDate(today, -30), today, tz),
+            getMealsByDate(userId, day, tz),
+            getWaterByDate(userId, day, tz),
+            getWeightInRange(userId, shiftLocalDate(day, -30), day, tz),
             getLatestWeight(userId),
             getNutritionGoals(userId),
         ]);
+        // Browsing the past: "current weight" is the last reading known by
+        // that day, not today's — otherwise the card contradicts the chart.
+        const asOf = day === today ? latest : (weights.at(-1) ?? null);
         return c.json(
-            buildDashboard(today, tz, meals, water, weights, latest, goals),
+            buildDashboard(day, tz, meals, water, weights, asOf, goals),
         );
     });
 

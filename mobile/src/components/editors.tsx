@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+    Alert,
     Animated,
     KeyboardAvoidingView,
     Modal,
     PanResponder,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -42,6 +44,27 @@ const MEAL_TYPES: { key: MealType; label: string }[] = [
     { key: "dinner", label: "Ужин" },
     { key: "snack", label: "Перекус" },
 ];
+
+/** Sensible default for a new meal by the local clock. */
+function mealTypeNow(): MealType {
+    const h = new Date().getHours();
+    if (h < 11) return "breakfast";
+    if (h < 16) return "lunch";
+    if (h < 22) return "dinner";
+    return "snack";
+}
+
+/** Alert is a no-op on web — fall back to window.confirm there. */
+function confirmDelete(title: string, onYes: () => void) {
+    if (Platform.OS === "web") {
+        if (window.confirm(title)) onYes();
+        return;
+    }
+    Alert.alert(title, undefined, [
+        { text: "Отмена", style: "cancel" },
+        { text: "Удалить", style: "destructive", onPress: onYes },
+    ]);
+}
 
 /** "" → null, "12,5" → 12.5, junk/≤0 → NaN (blocks save). */
 function parseNum(s: string): number | null {
@@ -212,7 +235,7 @@ function SheetActions({
                     accessibilityRole="button"
                     onPress={() => {
                         tapBuzz();
-                        onDelete();
+                        confirmDelete("Удалить запись?", onDelete);
                     }}
                     disabled={busy}
                     style={[styles.deleteBtn, { borderColor: theme.danger }]}
@@ -286,7 +309,7 @@ function MealForm({
 }) {
     const [description, setDescription] = useState(meal?.description ?? "");
     const [mealType, setMealType] = useState<MealType>(
-        (meal?.meal_type as MealType) ?? "snack",
+        (meal?.meal_type as MealType) ?? mealTypeNow(),
     );
     const [calories, setCalories] = useState(numText(meal?.calories));
     const [protein, setProtein] = useState(numText(meal?.protein_g));
@@ -353,6 +376,7 @@ function MealForm({
                         <Pressable
                             key={t.key}
                             accessibilityRole="button"
+                            accessibilityState={{ selected: active }}
                             onPress={() => setMealType(t.key)}
                             style={[
                                 styles.typeChip,

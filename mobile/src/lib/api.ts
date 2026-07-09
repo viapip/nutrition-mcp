@@ -157,9 +157,16 @@ export async function logout(): Promise<void> {
     await setToken(null);
 }
 
-export async function getDashboard(): Promise<DashboardData> {
-    if (MOCK) return structuredClone(MOCK_DASHBOARD);
-    return request<DashboardData>("/api/dashboard");
+/** No date = today; past days are read-mostly (new logs always land "now"). */
+export async function getDashboard(date?: string): Promise<DashboardData> {
+    if (MOCK) {
+        const d = structuredClone(MOCK_DASHBOARD);
+        if (date) d.date = date;
+        return d;
+    }
+    return request<DashboardData>(
+        date ? `/api/dashboard?date=${date}` : "/api/dashboard",
+    );
 }
 
 /**

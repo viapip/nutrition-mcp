@@ -11,7 +11,8 @@ export const Colors = {
         surfaceElevated: "#fffcf5",
         ink: "#20261f",
         inkSecondary: "#5a6154",
-        inkMuted: "#8a9082",
+        // 4.5:1 on surface — muted text stays readable at 12px
+        inkMuted: "#6b7164",
         hairline: "#e3dccd",
         accent: "#2e6b45",
         onAccent: "#f7f2e9",
@@ -26,8 +27,9 @@ export const Colors = {
         surfaceElevated: "#22251f",
         ink: "#efeadd",
         inkSecondary: "#a8ad9e",
-        inkMuted: "#6f7566",
-        hairline: "#33372e",
+        // 4.5:1 on surfaceElevated; hairline lifted so card borders survive dark
+        inkMuted: "#8b9180",
+        hairline: "#3c4136",
         accent: "#6fb389",
         onAccent: "#191b17",
         protein: "#3d9e63",
