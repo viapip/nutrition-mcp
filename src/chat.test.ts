@@ -132,6 +132,19 @@ test("executeTool converts weight kg to grams and reports bad input", async () =
     expect(unknown.error).toContain("unknown tool");
 });
 
+test("executeTool threads a turn idempotency key into the write", async () => {
+    const calls = installFakeSql([
+        { rows: [] }, // insertWater: idempotency lookup (miss)
+        { rows: [waterRow] }, // insertWater: insert returning
+    ]);
+    const res = JSON.parse(
+        await executeTool("u1", "log_water", { amount_ml: 300 }, "turn-key-1"),
+    );
+    expect(res.logged).toBe(true);
+    // The client key drives the dedupe lookup — a re-sent turn lands once.
+    expect(calls[0]!.values).toContain("turn-key-1");
+});
+
 test("executeTool set_goals merges with current goals", async () => {
     const goalsRow = {
         user_id: "u1",

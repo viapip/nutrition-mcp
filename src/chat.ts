@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import { streamSSE } from "hono/streaming";
 import {
     insertMeal,
@@ -364,11 +365,14 @@ async function daySnapshot(userId: string, date?: string) {
     return buildDashboard(day, tz, meals, water, weights, latest, goals);
 }
 
-/** Executes one tool call; errors come back as a JSON payload the model can react to. */
+/** Executes one tool call; errors come back as a JSON payload the model can react to.
+ * `idem` (when the caller threads a turn key) makes the write tools retry-safe:
+ * a re-sent chat turn reuses the same key, so the row lands once. */
 export async function executeTool(
     userId: string,
     name: string,
     args: Record<string, unknown>,
+    idem?: string,
 ): Promise<string> {
     try {
         switch (name) {
@@ -390,6 +394,7 @@ export async function executeTool(
                             : positive(args.carbs_g),
                     fat_g:
                         args.fat_g == null ? undefined : positive(args.fat_g),
+                    idempotency_key: idem,
                 };
                 if (!input.description) throw new Error("description required");
                 const { meal } = await insertMeal(userId, input);
@@ -398,12 +403,14 @@ export async function executeTool(
             case "log_water": {
                 const { entry } = await insertWater(userId, {
                     amount_ml: positive(args.amount_ml),
+                    idempotency_key: idem,
                 });
                 return JSON.stringify({ logged: true, entry });
             }
             case "log_weight": {
                 const { entry } = await insertWeight(userId, {
                     weight_g: weightGramsFromKg(args.weight_kg),
+                    idempotency_key: idem,
                 });
                 return JSON.stringify({ logged: true, entry });
             }
@@ -569,6 +576,7 @@ export async function runChatTurn(
     apiKey: string,
     onTool?: (name: string) => void,
     signal?: AbortSignal,
+    turnKey?: string,
 ): Promise<{ message: string; proposals: MealProposal[] }> {
     const tz = await getUserTimezone(userId);
     const messages: unknown[] = [
@@ -596,6 +604,7 @@ export async function runChatTurn(
     ];
 
     let logged = false;
+    let toolSeq = 0;
     const proposals: MealProposal[] = [];
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -614,10 +623,33 @@ export async function runChatTurn(
                     // leave args empty; executeTool reports the validation error
                 }
                 onTool?.(call.function.name);
+                // Stable per (turn, position, args): a re-sent turn reproduces
+                // the same key, so log_* writes dedupe on retry. Args are
+                // canonicalised (keys sorted) so a reformat between retries
+                // still matches.
+                // ponytail: keyed on call position; a model that reorders
+                // identical calls across a retry could still double-log — rare
+                // enough to accept over losing two genuinely-identical entries.
+                const seq = toolSeq++;
+                const canonicalArgs = JSON.stringify(
+                    args,
+                    Object.keys(args).sort(),
+                );
+                const idem = turnKey
+                    ? `chat:${turnKey}:${seq}:${createHash("sha256")
+                          .update(`${call.function.name}\n${canonicalArgs}`)
+                          .digest("hex")
+                          .slice(0, 16)}`
+                    : undefined;
                 const result =
                     call.function.name === "propose_meal"
                         ? collectProposal(args, proposals)
-                        : await executeTool(userId, call.function.name, args);
+                        : await executeTool(
+                              userId,
+                              call.function.name,
+                              args,
+                              idem,
+                          );
                 if (/^\{"(logged|updated|deleted|saved)":true/.test(result)) {
                     logged = true;
                 }
@@ -647,9 +679,19 @@ export function createChatRouter() {
 
     chat.post("/api/chat", authenticateBearer, rateLimit, async (c) => {
         let history: ChatMessage[];
+        let turnKey: string | undefined;
         try {
             const body = await c.req.json();
             history = body.messages;
+            // Client-stable per user message; a retried turn reuses it so the
+            // log_* tools dedupe instead of double-writing.
+            if (
+                typeof body.turn_key === "string" &&
+                body.turn_key.length > 0 &&
+                body.turn_key.length <= 100
+            ) {
+                turnKey = body.turn_key;
+            }
         } catch {
             return c.json({ error: "invalid_request" }, 400);
         }
@@ -696,6 +738,7 @@ export function createChatRouter() {
                         // Client Stop aborts the request; stop burning tokens
                         // and running tools for an answer nobody will see.
                         c.req.raw.signal,
+                        turnKey,
                     );
                     await stream.writeSSE({
                         data: JSON.stringify({
@@ -723,6 +766,7 @@ export function createChatRouter() {
                 apiKey,
                 undefined,
                 c.req.raw.signal,
+                turnKey,
             );
             return c.json({ message, proposals });
         } catch (err) {

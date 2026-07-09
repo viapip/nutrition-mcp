@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
     KeyboardAvoidingView,
     Pressable,
@@ -12,7 +12,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
-import { login, signup } from "@/lib/api";
+import { LoginError, login, signup } from "@/lib/api";
+import { resetStreakCache } from "./index";
 import {
     Colors,
     Fonts,
@@ -46,6 +47,12 @@ export default function LoginScreen() {
     const [busy, setBusy] = useState(false);
     const [focused, setFocused] = useState<string | null>(null);
 
+    // Мы попали сюда после logout (или свежий старт) — чистим стрик-кэш
+    // прошлого пользователя, иначе следующий увидит чужой бейдж.
+    useEffect(() => {
+        resetStreakCache();
+    }, []);
+
     const switchMode = (next: "signin" | "signup") => {
         if (next === mode) return;
         setMode(next);
@@ -63,12 +70,20 @@ export default function LoginScreen() {
                 await signup(email.trim(), password, code.trim() || undefined);
             }
             router.replace("/");
-        } catch {
-            setError(
-                mode === "signin"
-                    ? "Неверная почта или пароль. Попробуй ещё раз."
-                    : "Не получилось создать аккаунт — проверь поля (и инвайт-код, если он нужен).",
-            );
+        } catch (err) {
+            if (err instanceof LoginError && err.reason === "rate_limited") {
+                setError(
+                    "Слишком много попыток. Подожди минуту и попробуй ещё.",
+                );
+            } else if (err instanceof LoginError && err.reason === "network") {
+                setError("Нет связи с сервером. Проверь интернет.");
+            } else {
+                setError(
+                    mode === "signin"
+                        ? "Неверная почта или пароль. Попробуй ещё раз."
+                        : "Не получилось создать аккаунт — проверь поля (и инвайт-код, если он нужен).",
+                );
+            }
         } finally {
             setBusy(false);
         }

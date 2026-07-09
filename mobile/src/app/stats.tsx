@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Animated,
     Pressable,
@@ -252,7 +252,11 @@ export default function StatsScreen() {
         setRefreshing(false);
     }, [load]);
 
+    // ref-замок по индексу: быстрый двойной тап иначе добавит два приёма.
+    const inflight = useRef<Set<number>>(new Set());
     const repeatMeal = useCallback(async (item: FrequentMeal, i: number) => {
+        if (inflight.current.has(i)) return;
+        inflight.current.add(i);
         tapBuzz();
         setRepeatNote(null);
         try {
@@ -272,6 +276,8 @@ export default function StatsScreen() {
                 return;
             }
             setRepeatNote("Не добавилось — проверь сеть и попробуй ещё.");
+        } finally {
+            inflight.current.delete(i);
         }
     }, []);
 

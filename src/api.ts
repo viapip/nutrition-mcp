@@ -46,6 +46,27 @@ import {
  * mobile login and an MCP client session are interchangeable.
  */
 
+/** A valid IANA zone the profile can store; anything Intl rejects is dropped. */
+function validTimezone(tz: unknown): string | null {
+    if (typeof tz !== "string" || tz.length === 0 || tz.length > 64) {
+        return null;
+    }
+    try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        return tz;
+    } catch {
+        return null;
+    }
+}
+
+/** Client-supplied idempotency key so a retried POST doesn't double-insert. */
+function idempotencyKey(body: Record<string, unknown>): string | undefined {
+    const k = body.idempotency_key;
+    return typeof k === "string" && k.length > 0 && k.length <= 200
+        ? k
+        : undefined;
+}
+
 /** Aggregates one day of logs into the shape the mobile dashboard renders. */
 export function buildDashboard(
     today: string,
@@ -292,10 +313,12 @@ export function createApiRouter() {
     api.post("/api/login", async (c) => {
         let email = "";
         let password = "";
+        let tz: string | null = null;
         try {
             const body = await c.req.json();
             email = String(body.email ?? "");
             password = String(body.password ?? "");
+            tz = validTimezone(body.timezone);
         } catch {
             return c.json({ error: "invalid_request" }, 400);
         }
@@ -307,6 +330,9 @@ export function createApiRouter() {
         }
         try {
             const userId = await signInUser(email, password);
+            // Keep the profile's zone current with the device — the app has no
+            // other way to set it, and without it every day/streak is UTC.
+            if (tz) await upsertProfile(userId, { timezone: tz });
             const token = crypto.randomUUID();
             await storeToken(token, userId);
             return c.json({ token });
@@ -340,17 +366,15 @@ export function createApiRouter() {
         }
         try {
             const userId = await signUpUser(email, password);
+            const tz = validTimezone(body.timezone);
+            if (tz) await upsertProfile(userId, { timezone: tz });
             const token = crypto.randomUUID();
             await storeToken(token, userId);
             return c.json({ token });
-        } catch (err) {
-            return c.json(
-                {
-                    error: "signup_failed",
-                    message: err instanceof Error ? err.message : "failed",
-                },
-                400,
-            );
+        } catch {
+            // Generic on purpose: a verbatim "user already registered" lets an
+            // unauthenticated caller enumerate which emails have accounts.
+            return c.json({ error: "signup_failed" }, 400);
         }
     });
 
@@ -413,11 +437,12 @@ export function createApiRouter() {
 
     api.post("/api/meals", authenticateBearer, async (c) => {
         try {
-            const fields = mealFields(await jsonBody(c), false);
-            const { meal } = await insertMeal(
-                c.get("userId") as string,
-                fields as MealInput,
-            );
+            const body = await jsonBody(c);
+            const fields = mealFields(body, false);
+            const { meal } = await insertMeal(c.get("userId") as string, {
+                ...(fields as MealInput),
+                idempotency_key: idempotencyKey(body),
+            });
             return c.json({ meal }, 201);
         } catch {
             return c.json({ error: "invalid_request" }, 400);
@@ -458,6 +483,7 @@ export function createApiRouter() {
             const body = await jsonBody(c);
             const { entry } = await insertWater(c.get("userId") as string, {
                 amount_ml: posNum(body.amount_ml),
+                idempotency_key: idempotencyKey(body),
             });
             return c.json({ entry }, 201);
         } catch {
@@ -480,6 +506,7 @@ export function createApiRouter() {
             const body = await jsonBody(c);
             const { entry } = await insertWeight(c.get("userId") as string, {
                 weight_g: weightGrams(body.weight_kg),
+                idempotency_key: idempotencyKey(body),
             });
             return c.json({ entry }, 201);
         } catch {

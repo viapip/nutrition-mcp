@@ -152,6 +152,13 @@ export interface ChatReply {
     proposals: MealFields[];
 }
 
+/** Clear the stored token on 401, but only if it's still the one we sent —
+ * otherwise a late 401 from an old parallel request would wipe a token the
+ * user just re-obtained by logging back in. */
+async function clearIfStale(sentToken: string | null): Promise<void> {
+    if (sentToken && (await getToken()) === sentToken) await setToken(null);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const token = await getToken();
     const res = await fetch(`${API_URL}${path}`, {
@@ -163,11 +170,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         },
     });
     if (res.status === 401) {
-        await setToken(null);
+        await clearIfStale(token);
         throw new Error("unauthorized");
     }
     if (!res.ok) throw new Error(`Request failed: ${res.status}`);
     return res.json() as Promise<T>;
+}
+
+/** Device IANA zone (e.g. "Europe/Moscow"); the server stores it so days,
+ * streaks and water buckets aren't computed in UTC. Returns undefined for
+ * "UTC" (real or Hermes' no-ICU fallback) — the server default is already
+ * UTC, so we never overwrite a good stored zone with a bogus fallback. */
+function deviceTimezone(): string | undefined {
+    try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return tz && tz !== "UTC" ? tz : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Distinguishes wrong-credentials from rate-limit/offline so the login screen
+ * can stop telling a user with the right password that it's wrong. */
+export class LoginError extends Error {
+    constructor(public reason: "invalid" | "rate_limited" | "network") {
+        super(reason);
+    }
 }
 
 export async function login(email: string, password: string): Promise<void> {
@@ -175,10 +203,23 @@ export async function login(email: string, password: string): Promise<void> {
         await setToken("mock-token");
         return;
     }
-    const { token } = await request<{ token: string }>("/api/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-    });
+    let res: Response;
+    try {
+        res = await fetch(`${API_URL}/api/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email,
+                password,
+                timezone: deviceTimezone(),
+            }),
+        });
+    } catch {
+        throw new LoginError("network");
+    }
+    if (res.status === 429) throw new LoginError("rate_limited");
+    if (!res.ok) throw new LoginError("invalid");
+    const { token } = (await res.json()) as { token: string };
     await setToken(token);
 }
 
@@ -193,7 +234,12 @@ export async function signup(
     }
     const { token } = await request<{ token: string }>("/api/signup", {
         method: "POST",
-        body: JSON.stringify({ email, password, code }),
+        body: JSON.stringify({
+            email,
+            password,
+            code,
+            timezone: deviceTimezone(),
+        }),
     });
     await setToken(token);
 }
@@ -230,6 +276,7 @@ export async function sendChat(
     messages: ChatMessage[],
     onTool?: (name: string) => void,
     signal?: AbortSignal,
+    turnKey?: string,
 ): Promise<ChatReply> {
     if (MOCK) {
         onTool?.("propose_meal");
@@ -256,11 +303,11 @@ export async function sendChat(
             Accept: "text/event-stream",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ messages, turn_key: turnKey }),
         signal,
     });
     if (res.status === 401) {
-        await setToken(null);
+        await clearIfStale(token);
         throw new Error("unauthorized");
     }
     if (res.status === 503) throw new Error("chat_not_configured");
@@ -329,7 +376,17 @@ export async function saveLlmKey(key: string | null): Promise<Settings> {
 
 // ----- manual editing -----
 
-export async function addMeal(fields: MealFields): Promise<void> {
+/** A key stable across retries of the same action, so the server dedupes a
+ * re-sent write instead of double-inserting. Call from an event handler /
+ * effect (uses Date.now) — never in a component's render body. */
+export function newIdempotencyKey(): string {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function addMeal(
+    fields: MealFields,
+    idempotencyKey?: string,
+): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.meals.push({
             id: `mock-${Date.now()}`,
@@ -345,7 +402,7 @@ export async function addMeal(fields: MealFields): Promise<void> {
     }
     await request("/api/meals", {
         method: "POST",
-        body: JSON.stringify(fields),
+        body: JSON.stringify({ ...fields, idempotency_key: idempotencyKey }),
     });
 }
 

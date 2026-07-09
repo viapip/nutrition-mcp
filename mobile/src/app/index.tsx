@@ -58,8 +58,14 @@ const STATS_ROUTE = "/stats" as Href;
 // Стрик меняется максимум раз в день — не дёргаем getStats на каждый фокус.
 // Ключ — «сегодня» по серверу (поле end ответа), чтобы смена дня в профильной
 // таймзоне не оставляла вчерашний бейдж до локальной полуночи.
-// editorDone сбрасывает: правка прошлых дней могла порвать или срастить серию.
+// editorDone/вода/повтор сбрасывают: первая запись дня меняет серию.
 let streakCache: { day: string; current: number } | null = null;
+
+// Кэш — модульная глобаль и переживает logout; login.tsx зовёт это при
+// монтировании, иначе следующий пользователь на девайсе увидит чужой стрик.
+export function resetStreakCache() {
+    streakCache = null;
+}
 
 /** 1 день, 2 дня, 5 дней. */
 function dayWord(n: number): string {
@@ -217,6 +223,7 @@ export default function DashboardScreen() {
     const [waterNote, setWaterNote] = useState<string | null>(null);
     const [waterBusy, setWaterBusy] = useState(false);
     const waterLock = useRef(false);
+    const repeatLock = useRef(false);
     const [mealEditor, setMealEditor] = useState<{
         visible: boolean;
         meal: MealRow | null;
@@ -336,6 +343,9 @@ export default function DashboardScreen() {
                     return;
                 }
                 load();
+                // Возврат из чата мог изменить сегодняшнюю серию — не доверяем
+                // дневному кэшу, перезапрашиваем стрик.
+                streakCache = null;
                 void loadStreak(todayDate);
             });
         }, [load, loadStreak, todayDate]),
@@ -391,7 +401,10 @@ export default function DashboardScreen() {
             bumpWater(ml);
             try {
                 await addWater(ml);
+                // Первый стакан за день двигает стрик — сбрасываем кэш бейджа.
+                streakCache = null;
                 await load();
+                void loadStreak(todayDate);
             } catch (err) {
                 if (err instanceof Error && err.message === "unauthorized") {
                     router.replace("/login");
@@ -407,7 +420,7 @@ export default function DashboardScreen() {
                 setWaterBusy(false);
             }
         },
-        [bumpWater, load],
+        [bumpWater, load, loadStreak, todayDate],
     );
 
     const deleteWater = useCallback(
@@ -431,6 +444,9 @@ export default function DashboardScreen() {
     // «Повторить приём»: копия записи логируется сейчас, поэтому прыгаем на сегодня.
     const repeatMeal = useCallback(
         async (meal: MealRow) => {
+            // ref-замок: быстрый двойной тап иначе пишет два одинаковых приёма.
+            if (repeatLock.current) return;
+            repeatLock.current = true;
             tapBuzz();
             try {
                 await addMeal({
@@ -442,13 +458,17 @@ export default function DashboardScreen() {
                     fat_g: meal.fat_g,
                 });
                 successBuzz();
+                streakCache = null;
+                void loadStreak(todayDate);
                 if (viewDate == null) void load();
                 else setViewDate(null);
             } catch {
                 // тихий сбой здесь хуже молчания — но повтор не критичен
+            } finally {
+                repeatLock.current = false;
             }
         },
-        [load, viewDate],
+        [load, viewDate, loadStreak, todayDate],
     );
 
     if (!data) {

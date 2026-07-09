@@ -116,6 +116,41 @@ async function finishAuthorization(
     return c.redirect(redirectUrl.toString());
 }
 
+/**
+ * OAuth 2.0 Security BCP: redirect_uri MUST be validated, or an attacker can
+ * craft an /authorize link on this trusted origin with their own redirect_uri,
+ * have the victim log in, and receive the auth code (account takeover). We
+ * accept loopback (native MCP clients bind an ephemeral localhost port) plus an
+ * explicit host allowlist from OAUTH_ALLOWED_REDIRECT_HOSTS (comma-separated;
+ * defaults to Claude's MCP client hosts).
+ */
+function allowedRedirectUri(uri: string): boolean {
+    let url: URL;
+    try {
+        url = new URL(uri);
+    } catch {
+        return false;
+    }
+    const host = url.hostname;
+    // WHATWG URL keeps the brackets on IPv6 hosts ("[::1]").
+    const loopback =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "::1" ||
+        host === "[::1]";
+    if (loopback && (url.protocol === "http:" || url.protocol === "https:")) {
+        return true;
+    }
+    if (url.protocol !== "https:") return false;
+    const allow = (
+        process.env.OAUTH_ALLOWED_REDIRECT_HOSTS ?? "claude.ai,claude.com"
+    )
+        .split(",")
+        .map((h) => h.trim().toLowerCase())
+        .filter(Boolean);
+    return allow.some((a) => host === a || host.endsWith(`.${a}`));
+}
+
 export function createOAuthRouter() {
     const oauth = new Hono();
 
@@ -163,6 +198,15 @@ export function createOAuthRouter() {
         }
         if (reqClientId !== clientId) {
             return c.json({ error: "invalid_client" }, 400);
+        }
+        if (!allowedRedirectUri(redirectUri)) {
+            return c.json(
+                {
+                    error: "invalid_request",
+                    error_description: "redirect_uri not allowed",
+                },
+                400,
+            );
         }
 
         cleanExpiredSessions();

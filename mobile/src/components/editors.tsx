@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     Animated,
@@ -325,6 +325,9 @@ function MealForm({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(false);
     const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
+    // ref-замок: busy — async-стейт, быстрый двойной тап проскакивает до
+    // ре-рендера и шлёт две записи.
+    const lock = useRef(false);
 
     // Форма ремоунтится на каждое открытие — частое тянем один раз, только
     // для нового приёма; сбой сети просто оставляет форму без чипов.
@@ -370,6 +373,8 @@ function MealForm({
             setError(true);
             return;
         }
+        if (lock.current) return;
+        lock.current = true;
         setBusy(true);
         try {
             const fields = {
@@ -383,17 +388,23 @@ function MealForm({
         } catch {
             setError(true);
         } finally {
+            lock.current = false;
             setBusy(false);
         }
     };
 
     const del = async () => {
-        if (!meal) return;
+        if (!meal || lock.current) return;
+        lock.current = true;
         setBusy(true);
         try {
             await removeMeal(meal.id);
             onDone();
+        } catch {
+            // раньше падало молча — теперь хотя бы видно, что не удалилось
+            setError(true);
         } finally {
+            lock.current = false;
             setBusy(false);
         }
     };
@@ -590,6 +601,7 @@ function WeightForm({
     );
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(false);
+    const lock = useRef(false);
 
     const save = async () => {
         const v = parseNum(kg);
@@ -597,6 +609,8 @@ function WeightForm({
             setError(true);
             return;
         }
+        if (lock.current) return;
+        lock.current = true;
         setBusy(true);
         try {
             if (entry) await patchWeight(entry.id, v);
@@ -605,17 +619,22 @@ function WeightForm({
         } catch {
             setError(true);
         } finally {
+            lock.current = false;
             setBusy(false);
         }
     };
 
     const del = async () => {
-        if (!entry) return;
+        if (!entry || lock.current) return;
+        lock.current = true;
         setBusy(true);
         try {
             await removeWeight(entry.id);
             onDone();
+        } catch {
+            setError(true);
         } finally {
+            lock.current = false;
             setBusy(false);
         }
     };

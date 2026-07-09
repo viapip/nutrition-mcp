@@ -35,6 +35,7 @@ import {
 import {
     addMeal,
     getSettings,
+    newIdempotencyKey,
     sendChat,
     type ChatMessage,
     type ChatPart,
@@ -42,15 +43,22 @@ import {
 } from "@/lib/api";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
-/** Карточка «записать?» из propose_meal; resolved живёт только на девайсе. */
-type Proposal = MealFields & { resolved?: "saved" | "declined" };
+/** Карточка «записать?» из propose_meal; resolved и idem живут только на
+ * девайсе — idem даёт серверу дедупнуть повторный тап «Записать». */
+type Proposal = MealFields & {
+    resolved?: "saved" | "declined";
+    idem?: string;
+};
 
-// Локальная надстройка над проводным форматом: время, флаг сбоя и карточки
-// живут только в сторадже/стейте, в запрос уходят голые {role, content}.
+// Локальная надстройка над проводным форматом: время, флаг сбоя, карточки и
+// ключ хода живут только в сторадже/стейте, в запрос уходят голые {role,
+// content}. turnKey на сообщении пользователя переживает перезапуск, поэтому
+// retry после ремоунта дедупится сервером так же, как в той же сессии.
 type Msg = ChatMessage & {
     at?: number;
     failed?: boolean;
     proposals?: Proposal[];
+    turnKey?: string;
 };
 
 /** Подсказки под час: утром — про завтрак, вечером — про итоги.
@@ -514,9 +522,12 @@ export default function ChatScreen() {
                     setMessages((cur) => (cur.length ? cur : restored));
                 }
                 void sweepOrphanPhotos(restored);
+                // Only arm the mirror after a *successful* read: a transient
+                // read error must not let the mirror overwrite stored history
+                // with an empty array (irreversible loss). Next launch retries.
+                setHydrated(true);
             })
-            .catch(() => {})
-            .finally(() => setHydrated(true));
+            .catch(() => {});
         // Недописанное сообщение переживает перезапуск приложения.
         AsyncStorage.getItem(DRAFT_KEY)
             .then((d) => {
@@ -666,21 +677,30 @@ export default function ChatScreen() {
         setStatus("Думаю…");
         const ctrl = new AbortController();
         abortRef.current = ctrl;
+        // Ключ хода берём с последнего сообщения пользователя: send ставит
+        // свежий, retry идёт по той же истории → тот же ключ → сервер дедупит.
+        const turnKey = [...next]
+            .reverse()
+            .find((m) => m.role === "user")?.turnKey;
         try {
             const reply = await sendChat(
                 await toPayload(slimHistory(next)),
                 (name) => setStatus(TOOL_STATUS[name] ?? "Думаю…"),
                 ctrl.signal,
+                turnKey,
             );
             successBuzz();
             const assistant = stamped("assistant", reply.message);
+            // Каждой карточке — свой idem-ключ для дедупа повторного «Записать».
+            const proposals: Proposal[] = reply.proposals.map((p) => ({
+                ...p,
+                idem: newIdempotencyKey(),
+            }));
             // Функциональный аппенд, не захваченный next: пока ход шёл,
             // карточка могла резолвнуться — её флаг нельзя затереть.
             setMessages((cur) => [
                 ...cur,
-                reply.proposals.length
-                    ? { ...assistant, proposals: reply.proposals }
-                    : assistant,
+                proposals.length ? { ...assistant, proposals } : assistant,
             ]);
         } catch (err) {
             // Cancelled by the user — keep their message, add nothing.
@@ -720,7 +740,12 @@ export default function ChatScreen() {
         // Хвост из сбойных заметок вычищается — новая попытка идёт с чистой
         // историей, а не поверх «не получилось».
         const base = messages.filter((m) => !m.failed);
-        const next = [...base, stamped("user", content)];
+        // Новый ход — новый ключ, живёт на сообщении (переживает перезапуск).
+        const userMsg: Msg = {
+            ...stamped("user", content),
+            turnKey: newIdempotencyKey(),
+        };
+        const next = [...base, userMsg];
         tapBuzz();
         setMessages(next);
         setInput("");
@@ -729,7 +754,8 @@ export default function ChatScreen() {
         await run(next);
     };
 
-    // «Повторить» на сбойном пузыре: та же история, без перепечатывания.
+    // «Повторить» на сбойном пузыре: та же история → run() возьмёт тот же
+    // turnKey с последнего сообщения пользователя → сервер дедупит запись.
     const retry = async () => {
         if (busy || runLock.current) return;
         tapBuzz();
@@ -768,14 +794,19 @@ export default function ChatScreen() {
         }
         setSavingCard(`${mi}:${pi}`);
         try {
-            await addMeal({
-                description: p.description,
-                meal_type: p.meal_type,
-                calories: p.calories ?? null,
-                protein_g: p.protein_g ?? null,
-                carbs_g: p.carbs_g ?? null,
-                fat_g: p.fat_g ?? null,
-            });
+            // p.idem дедупит повторный тап после потерянного ответа: если
+            // строка уже вставлена, сервер вернёт её же, а не второй дубль.
+            await addMeal(
+                {
+                    description: p.description,
+                    meal_type: p.meal_type,
+                    calories: p.calories ?? null,
+                    protein_g: p.protein_g ?? null,
+                    carbs_g: p.carbs_g ?? null,
+                    fat_g: p.fat_g ?? null,
+                },
+                p.idem,
+            );
             successBuzz();
             markProposal(mi, pi, "saved");
         } catch (err) {
