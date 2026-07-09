@@ -473,7 +473,12 @@ async function callLlm(
             : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
-        const body = await res.text().catch(() => "");
+        // Server-log only (client gets a generic chat_failed); still redact
+        // key-shaped strings in case the provider echoes credentials back.
+        const body = (await res.text().catch(() => "")).replace(
+            /sk-[\w-]{10,}|Bearer\s+\S+/g,
+            "[redacted]",
+        );
         throw new Error(
             `LLM request failed: ${res.status} ${body.slice(0, 200)}`,
         );
