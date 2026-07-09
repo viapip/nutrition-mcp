@@ -2,7 +2,6 @@ import { router } from "expo-router";
 import { useState } from "react";
 import {
     KeyboardAvoidingView,
-    Platform,
     Pressable,
     StyleSheet,
     Text,
@@ -56,10 +55,7 @@ export default function LoginScreen() {
 
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
-            <KeyboardAvoidingView
-                style={styles.flex}
-                behavior={Platform.OS === "ios" ? "padding" : undefined}
-            >
+            <KeyboardAvoidingView style={styles.flex} behavior="padding">
                 <View style={styles.wrap}>
                     <Text style={[styles.eyebrow, { color: theme.inkMuted }]}>
                         NUTRITION MCP
@@ -88,6 +84,8 @@ export default function LoginScreen() {
                             ]}
                             placeholder="Email"
                             placeholderTextColor={theme.inkMuted}
+                            cursorColor={theme.accent}
+                            selectionColor={theme.accent}
                             autoCapitalize="none"
                             autoComplete="email"
                             keyboardType="email-address"
@@ -105,6 +103,8 @@ export default function LoginScreen() {
                             ]}
                             placeholder="Password"
                             placeholderTextColor={theme.inkMuted}
+                            cursorColor={theme.accent}
+                            selectionColor={theme.accent}
                             secureTextEntry
                             autoComplete="password"
                             value={password}
@@ -123,6 +123,8 @@ export default function LoginScreen() {
                                 ]}
                                 placeholder="Invite code (if you were given one)"
                                 placeholderTextColor={theme.inkMuted}
+                                cursorColor={theme.accent}
+                                selectionColor={theme.accent}
                                 autoCapitalize="none"
                                 value={code}
                                 onChangeText={setCode}

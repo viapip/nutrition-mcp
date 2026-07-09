@@ -188,6 +188,8 @@ export default function SettingsScreen() {
                                 ]}
                                 placeholder="sk-…"
                                 placeholderTextColor={theme.inkMuted}
+                                cursorColor={theme.accent}
+                                selectionColor={theme.accent}
                                 value={key}
                                 onChangeText={(v) => {
                                     setKey(v);

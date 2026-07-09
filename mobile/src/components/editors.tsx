@@ -5,12 +5,14 @@ import {
     Modal,
     PanResponder,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
     useColorScheme,
     View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
     Colors,
@@ -97,12 +99,15 @@ function Sheet({
     useEffect(() => {
         if (visible) drag.setValue(0);
     }, [visible, drag]);
+    const insets = useSafeAreaInsets();
 
     return (
         <Modal
             visible={visible}
             transparent
             animationType="slide"
+            statusBarTranslucent
+            navigationBarTranslucent
             onRequestClose={onClose}
         >
             {/* edge-to-edge Android needs padding too (SDK 57) */}
@@ -117,6 +122,8 @@ function Sheet({
                         {
                             backgroundColor: theme.surfaceElevated,
                             borderColor: theme.hairline,
+                            // Keep actions above the Android navigation bar.
+                            paddingBottom: Spacing.xl + insets.bottom,
                             transform: [{ translateY: drag }],
                         },
                     ]}
@@ -132,7 +139,14 @@ function Sheet({
                             {title}
                         </Text>
                     </View>
-                    {children}
+                    <ScrollView
+                        style={styles.sheetBody}
+                        contentContainerStyle={styles.sheetBodyContent}
+                        keyboardShouldPersistTaps="handled"
+                        showsVerticalScrollIndicator={false}
+                    >
+                        {children}
+                    </ScrollView>
                 </Animated.View>
             </KeyboardAvoidingView>
         </Modal>
@@ -173,6 +187,8 @@ function Field({
                 keyboardType={keyboard}
                 placeholder={placeholder}
                 placeholderTextColor={theme.inkMuted}
+                cursorColor={theme.accent}
+                selectionColor={theme.accent}
             />
         </View>
     );
@@ -681,14 +697,16 @@ const styles = StyleSheet.create({
     sheet: {
         width: "100%",
         maxWidth: MaxContentWidth,
+        maxHeight: "88%",
         alignSelf: "center",
         borderTopLeftRadius: Radii.lg,
         borderTopRightRadius: Radii.lg,
         borderWidth: 1,
         padding: Spacing.lg,
-        paddingBottom: Spacing.xl,
         gap: Spacing.md,
     },
+    sheetBody: { flexGrow: 0 },
+    sheetBodyContent: { gap: Spacing.md },
     handleZone: { gap: Spacing.md },
     grabber: {
         alignSelf: "center",

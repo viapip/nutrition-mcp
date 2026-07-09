@@ -465,14 +465,18 @@ async function callLlm(
             model: LLM_MODEL(),
             messages,
             tools: TOOLS,
-            temperature: 0.3,
+            // No temperature: kimi-for-coding rejects anything but 1;
+            // provider defaults are fine for the rest.
         }),
         signal: signal
             ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
             : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
-        throw new Error(`LLM request failed: ${res.status}`);
+        const body = await res.text().catch(() => "");
+        throw new Error(
+            `LLM request failed: ${res.status} ${body.slice(0, 200)}`,
+        );
     }
     const data = (await res.json()) as {
         choices?: { message?: LlmMessage }[];

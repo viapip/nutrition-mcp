@@ -576,6 +576,8 @@ export default function ChatScreen() {
                             ]}
                             placeholder="A plate, a snack, a weigh-in…"
                             placeholderTextColor={theme.inkMuted}
+                            cursorColor={theme.accent}
+                            selectionColor={theme.accent}
                             value={input}
                             onChangeText={setInput}
                             onSubmitEditing={() => void send()}
