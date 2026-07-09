@@ -98,6 +98,45 @@ export interface DashboardData {
     meals: MealRow[];
 }
 
+export interface StatsDay {
+    date: string;
+    calories: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+    water_ml: number;
+    logged: boolean;
+}
+
+export interface FrequentMeal {
+    description: string;
+    meal_type: MealType | null;
+    calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    count: number;
+}
+
+export interface StatsData {
+    start: string;
+    end: string;
+    days: StatsDay[];
+    streak: { current: number; best: number };
+    frequent: FrequentMeal[];
+    weight: {
+        series: { date: string; weight_g: number }[];
+        target_g: number | null;
+    };
+    goals: {
+        daily_calories: number | null;
+        daily_protein_g: number | null;
+        daily_carbs_g: number | null;
+        daily_fat_g: number | null;
+        daily_water_ml: number | null;
+    };
+}
+
 export type ChatPart =
     | { type: "text"; text: string }
     | { type: "image_url"; image_url: { url: string } };
@@ -167,6 +206,13 @@ export async function getDashboard(date?: string): Promise<DashboardData> {
     return request<DashboardData>(
         date ? `/api/dashboard?date=${date}` : "/api/dashboard",
     );
+}
+
+/** Trailing-window aggregates for the stats screen (7–90 days). */
+export async function getStats(days = 30): Promise<StatsData> {
+    if (MOCK) return structuredClone(MOCK_STATS);
+    // /api/stats занят публичной статистикой лендинга
+    return request<StatsData>(`/api/summary?days=${days}`);
 }
 
 /**
@@ -379,6 +425,90 @@ export async function saveGoals(goals: GoalsInput): Promise<void> {
 }
 
 // ---------- Fixtures (mock mode) ----------
+
+const MOCK_STATS: StatsData = (() => {
+    const end = new Date().toISOString().slice(0, 10);
+    const shift = (days: number) => {
+        const d = new Date(`${end}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + days);
+        return d.toISOString().slice(0, 10);
+    };
+    // Правдоподобные 30 дней: будни ровнее, выходные выше, пара пропусков.
+    const days: StatsDay[] = Array.from({ length: 30 }, (_, i) => {
+        const date = shift(i - 29);
+        const dow = new Date(`${date}T12:00:00Z`).getUTCDay();
+        const skipped = i === 6 || i === 19;
+        const base = dow === 0 || dow === 6 ? 2350 : 1950;
+        const calories = skipped ? 0 : base + ((i * 137) % 400) - 200;
+        return {
+            date,
+            calories,
+            protein_g: skipped ? 0 : 90 + ((i * 31) % 40),
+            carbs_g: skipped ? 0 : 180 + ((i * 53) % 60),
+            fat_g: skipped ? 0 : 55 + ((i * 17) % 25),
+            water_ml: skipped ? 0 : 1500 + ((i * 211) % 1200),
+            logged: !skipped,
+        };
+    });
+    return {
+        start: shift(-29),
+        end,
+        days,
+        streak: { current: 10, best: 13 },
+        frequent: [
+            {
+                description: "Овсянка с черникой",
+                meal_type: "breakfast",
+                calories: 420,
+                protein_g: 14,
+                carbs_g: 58,
+                fat_g: 16,
+                count: 9,
+            },
+            {
+                description: "Куриный боул с рисом",
+                meal_type: "lunch",
+                calories: 640,
+                protein_g: 46,
+                carbs_g: 62,
+                fat_g: 22,
+                count: 7,
+            },
+            {
+                description: "Греческий йогурт с мёдом",
+                meal_type: "snack",
+                calories: 230,
+                protein_g: 15,
+                carbs_g: 20,
+                fat_g: 9,
+                count: 5,
+            },
+            {
+                description: "Лосось с овощами",
+                meal_type: "dinner",
+                calories: 480,
+                protein_g: 38,
+                carbs_g: 18,
+                fat_g: 26,
+                count: 4,
+            },
+        ],
+        weight: {
+            series: Array.from({ length: 11 }, (_, i) => ({
+                date: shift(i * 3 - 30),
+                weight_g: 80100 - i * 190,
+            })),
+            target_g: 74000,
+        },
+        goals: {
+            daily_calories: 2200,
+            daily_protein_g: 140,
+            daily_carbs_g: 220,
+            daily_fat_g: 70,
+            daily_water_ml: 2500,
+        },
+    };
+})();
 
 const MOCK_DASHBOARD: DashboardData = {
     date: new Date().toISOString().slice(0, 10),

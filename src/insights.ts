@@ -104,7 +104,7 @@ function trailingAverage(
     return mean(values);
 }
 
-function longestStreak(
+export function longestStreak(
     buckets: DailyBucket[],
     predicate: (b: DailyBucket) => boolean,
 ): number {
@@ -121,7 +121,7 @@ function longestStreak(
     return best;
 }
 
-function currentStreak(
+export function currentStreak(
     buckets: DailyBucket[],
     predicate: (b: DailyBucket) => boolean,
 ): number {
@@ -133,7 +133,7 @@ function currentStreak(
     return count;
 }
 
-function nonEmpty(b: DailyBucket): boolean {
+export function nonEmpty(b: DailyBucket): boolean {
     return b.meals.length > 0 || b.waterMl > 0;
 }
 

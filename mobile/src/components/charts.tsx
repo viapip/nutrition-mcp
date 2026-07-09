@@ -566,3 +566,121 @@ const barStyles = StyleSheet.create({
     },
     tick: { fontFamily: Fonts.sans, fontSize: 10 },
 });
+
+// ---------- Calorie columns (30-day history) ----------
+
+interface CalorieColumnsProps {
+    /** Ккал по дням, от старых к новым */
+    values: number[];
+    goal: number | null;
+    theme: Theme;
+    width: number;
+    height?: number;
+}
+
+/** Тонкие колонки по дням: перебор цели — danger, пустые дни — заглушки. */
+export function CalorieColumns({
+    values,
+    goal,
+    theme,
+    width,
+    height = 84,
+}: CalorieColumnsProps) {
+    const n = values.length;
+    if (n === 0) return null;
+
+    // Room for the goal label on the right edge (as in WeightSparkline)
+    const padRight = goal != null ? 44 : 0;
+    const plotW = width - padRight;
+    const gap = 2;
+    const slot = plotW / n;
+    const barW = Math.max(2, Math.min(10, slot - gap));
+    const rx = Math.min(4, barW / 2);
+    const topPad = 8;
+    const max = Math.max(...values, goal ?? 0, 1);
+    const barH = (v: number) => (v / max) * (height - topPad);
+    const goalY = goal != null ? height - barH(goal) : 0;
+
+    return (
+        <View
+            accessible
+            accessibilityLabel={`Калории по дням, ${n} ${n === 1 ? "день" : "дней"}${
+                goal != null
+                    ? `, цель ${goal.toLocaleString("ru-RU")} ккал`
+                    : ""
+            }`}
+        >
+            <Svg width={width} height={height}>
+                <Line
+                    x1={0}
+                    y1={height - 0.5}
+                    x2={plotW}
+                    y2={height - 0.5}
+                    stroke={theme.hairline}
+                    strokeWidth={1}
+                />
+                {values.map((v, i) => {
+                    const x = i * slot + (slot - barW) / 2;
+                    if (v <= 0) {
+                        // Пустой день: едва заметный пенёк на базовой линии
+                        return (
+                            <Rect
+                                key={i}
+                                x={x}
+                                y={height - 3}
+                                width={barW}
+                                height={3}
+                                fill={theme.hairline}
+                            />
+                        );
+                    }
+                    const h = Math.max(barH(v), rx * 2);
+                    const color =
+                        goal != null && v > goal ? theme.danger : theme.accent;
+                    // Rounded data-end, square baseline: overdraw the corners
+                    return (
+                        <G key={i}>
+                            <Rect
+                                x={x}
+                                y={height - h}
+                                width={barW}
+                                height={h}
+                                rx={rx}
+                                fill={color}
+                            />
+                            <Rect
+                                x={x}
+                                y={height - rx}
+                                width={barW}
+                                height={rx}
+                                fill={color}
+                            />
+                        </G>
+                    );
+                })}
+                {goal != null && (
+                    <>
+                        <Line
+                            x1={0}
+                            y1={goalY}
+                            x2={plotW}
+                            y2={goalY}
+                            stroke={theme.inkMuted}
+                            strokeWidth={1}
+                            strokeDasharray="4 4"
+                            strokeOpacity={0.7}
+                        />
+                        <SvgText
+                            x={plotW + 6}
+                            y={goalY + 3.5}
+                            fontSize={10}
+                            fill={theme.inkMuted}
+                        >
+                            {goal.toLocaleString("ru-RU")}
+                        </SvgText>
+                    </>
+                )}
+            </Svg>
+        </View>
+    );
+}

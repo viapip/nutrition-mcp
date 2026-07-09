@@ -1,4 +1,4 @@
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, type Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Animated,
@@ -34,6 +34,7 @@ import {
     addMeal,
     addWater,
     getDashboard,
+    getStats,
     getToken,
     removeWater,
     type DashboardData,
@@ -49,6 +50,26 @@ const MEAL_LABEL: Record<string, string> = {
 };
 
 const WATER_PRESETS = [150, 250, 500];
+
+// Экран статистики создаётся параллельно; typed routes подхватят маршрут
+// после генерации .expo/types — до тех пор нужен каст.
+const STATS_ROUTE = "/stats" as Href;
+
+// Стрик меняется максимум раз в день — не дёргаем getStats на каждый фокус.
+// Ключ — «сегодня» по серверу (поле end ответа), чтобы смена дня в профильной
+// таймзоне не оставляла вчерашний бейдж до локальной полуночи.
+// editorDone сбрасывает: правка прошлых дней могла порвать или срастить серию.
+let streakCache: { day: string; current: number } | null = null;
+
+/** 1 день, 2 дня, 5 дней. */
+function dayWord(n: number): string {
+    const d10 = n % 10;
+    const d100 = n % 100;
+    if (d100 >= 11 && d100 <= 14) return "дней";
+    if (d10 === 1) return "день";
+    if (d10 >= 2 && d10 <= 4) return "дня";
+    return "дней";
+}
 
 function formatDate(iso: string): string {
     return new Date(`${iso}T12:00:00`).toLocaleDateString("ru-RU", {
@@ -205,6 +226,28 @@ export default function DashboardScreen() {
         entry: { id: string; weight_g: number } | null;
     }>({ visible: false, entry: null });
     const [goalsVisible, setGoalsVisible] = useState(false);
+    const [streak, setStreak] = useState<number | null>(null);
+
+    // Отсекает устаревший ответ, когда editorDone перезапросил стрик раньше.
+    const streakSeq = useRef(0);
+    const loadStreak = useCallback(async (serverToday?: string | null) => {
+        if (
+            streakCache &&
+            streakCache.day === (serverToday ?? streakCache.day)
+        ) {
+            setStreak(streakCache.current);
+            return;
+        }
+        const seq = ++streakSeq.current;
+        try {
+            const s = await getStats(30);
+            if (seq !== streakSeq.current) return;
+            streakCache = { day: s.end, current: s.streak.current };
+            setStreak(s.streak.current);
+        } catch {
+            // без статистики бейдж просто не показывается
+        }
+    }, []);
 
     // Полоса недели: 6 прошлых дней тянутся отдельными запросами; последний
     // залп побеждает (weekSeq отсекает устаревшие ответы). Прошлые дни меняются
@@ -253,6 +296,11 @@ export default function DashboardScreen() {
                     weekLoadedFor.current = d.date;
                     void loadWeek(d.date);
                 }
+                // Сервер перешагнул на новый день — вчерашний стрик неактуален.
+                if (streakCache && streakCache.day !== d.date) {
+                    streakCache = null;
+                    void loadStreak();
+                }
             }
             setFailed(false);
         } catch (err) {
@@ -276,17 +324,21 @@ export default function DashboardScreen() {
                 });
             }
         }
-    }, [viewDate, todayDate, loadWeek]);
+    }, [viewDate, todayDate, loadWeek, loadStreak]);
 
     // Reload whenever the screen regains focus (e.g. returning from chat,
     // where the assistant may have logged something).
     useFocusEffect(
         useCallback(() => {
             getToken().then((t) => {
-                if (!t) router.replace("/login");
-                else load();
+                if (!t) {
+                    router.replace("/login");
+                    return;
+                }
+                load();
+                void loadStreak(todayDate);
             });
-        }, [load]),
+        }, [load, loadStreak, todayDate]),
     );
 
     const refresh = useCallback(async () => {
@@ -307,7 +359,9 @@ export default function DashboardScreen() {
         void load();
         // Правка могла коснуться прошлого дня — обновляем и полосу недели.
         if (todayDate) void loadWeek(todayDate);
-    }, [closeEditors, load, loadWeek, todayDate]);
+        streakCache = null;
+        void loadStreak();
+    }, [closeEditors, load, loadWeek, loadStreak, todayDate]);
 
     const isToday = viewDate == null;
 
@@ -451,6 +505,11 @@ export default function DashboardScreen() {
             ? data.weight.current_g - data.weight.target_g
             : null;
     const today = todayDate ?? data.date;
+    const showStreak = streak != null && streak > 0;
+    const streakLabel =
+        streak != null && streak >= 30
+            ? "30+ дней"
+            : `${streak ?? 0} ${dayWord(streak ?? 0)}`;
 
     // Неделя: 6 прошлых дней из pastWeek + сегодняшний слот из живых данных.
     const weekDays: WeekDay[] = Array.from({ length: 6 }, (_, i) => {
@@ -500,6 +559,24 @@ export default function DashboardScreen() {
                                     ).toUpperCase()}
                                 </Text>
                                 <View style={styles.headerActions}>
+                                    {!showStreak && (
+                                        <Pressable
+                                            accessibilityRole="button"
+                                            onPress={() =>
+                                                router.push(STATS_ROUTE)
+                                            }
+                                            hitSlop={8}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.headerAction,
+                                                    { color: theme.inkMuted },
+                                                ]}
+                                            >
+                                                Итоги
+                                            </Text>
+                                        </Pressable>
+                                    )}
                                     <Pressable
                                         accessibilityRole="button"
                                         onPress={() => router.push("/settings")}
@@ -530,9 +607,46 @@ export default function DashboardScreen() {
                                     </Pressable>
                                 </View>
                             </View>
-                            <Text style={[styles.h1, { color: theme.ink }]}>
-                                {dayTitle(data.date, today)}
-                            </Text>
+                            <View style={styles.h1Row}>
+                                <Text style={[styles.h1, { color: theme.ink }]}>
+                                    {dayTitle(data.date, today)}
+                                </Text>
+                                {showStreak && (
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Стрик ${streakLabel}, открыть итоги`}
+                                        onPress={() => {
+                                            tapBuzz();
+                                            router.push(STATS_ROUTE);
+                                        }}
+                                        hitSlop={8}
+                                        style={({ pressed }) => [
+                                            styles.streakBadge,
+                                            {
+                                                backgroundColor:
+                                                    theme.accentSoft,
+                                                transform: [
+                                                    {
+                                                        scale: pressed
+                                                            ? 0.96
+                                                            : 1,
+                                                    },
+                                                ],
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.streakText,
+                                                TabularNums,
+                                                { color: theme.accent },
+                                            ]}
+                                        >
+                                            ✦ {streakLabel}
+                                        </Text>
+                                    </Pressable>
+                                )}
+                            </View>
                         </View>
                     </FadeIn>
 
@@ -1310,6 +1424,17 @@ const styles = StyleSheet.create({
         fontSize: 32,
         lineHeight: 42,
     },
+    h1Row: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: Spacing.sm,
+    },
+    streakBadge: {
+        borderRadius: Radii.xl,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+    },
+    streakText: { fontFamily: Fonts.sansSemiBold, fontSize: 13 },
     weekRow: {
         flexDirection: "row",
         alignItems: "center",

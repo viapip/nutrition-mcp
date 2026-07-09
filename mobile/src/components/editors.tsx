@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
     Alert,
@@ -27,11 +28,13 @@ import {
 import {
     addMeal,
     addWeight,
+    getStats,
     patchMeal,
     patchWeight,
     removeMeal,
     removeWeight,
     saveGoals,
+    type FrequentMeal,
     type GoalsInput,
     type MealRow,
     type MealType,
@@ -76,6 +79,10 @@ function parseNum(s: string): number | null {
 
 function numText(v: number | null | undefined): string {
     return v == null ? "" : String(v);
+}
+
+function clip(s: string, max = 22): string {
+    return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
 }
 
 function useTheme(): Theme {
@@ -317,6 +324,37 @@ function MealForm({
     const [fat, setFat] = useState(numText(meal?.fat_g));
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(false);
+    const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
+
+    // Форма ремоунтится на каждое открытие — частое тянем один раз, только
+    // для нового приёма; сбой сети просто оставляет форму без чипов.
+    useEffect(() => {
+        if (meal) return;
+        let alive = true;
+        getStats(30)
+            .then((s) => {
+                if (alive) setFrequent(s.frequent);
+            })
+            .catch((err: unknown) => {
+                // 401 уже стёр токен — оставлять юзера в форме бессмысленно.
+                if (err instanceof Error && err.message === "unauthorized") {
+                    router.replace("/login");
+                }
+            });
+        return () => {
+            alive = false;
+        };
+    }, [meal]);
+
+    const fillFrom = (f: FrequentMeal) => {
+        tapBuzz();
+        setDescription(f.description);
+        if (f.meal_type) setMealType(f.meal_type);
+        setCalories(numText(f.calories));
+        setProtein(numText(f.protein_g));
+        setCarbs(numText(f.carbs_g));
+        setFat(numText(f.fat_g));
+    };
 
     const save = async () => {
         const nums = {
@@ -362,6 +400,51 @@ function MealForm({
 
     return (
         <>
+            {!meal && frequent.length > 0 && (
+                <View style={styles.frequentBlock}>
+                    <Text
+                        style={[
+                            styles.frequentLabel,
+                            { color: theme.inkSecondary },
+                        ]}
+                    >
+                        ЧАСТОЕ
+                    </Text>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
+                        contentContainerStyle={styles.frequentRow}
+                    >
+                        {frequent.map((f, i) => (
+                            <Pressable
+                                key={`${f.description}-${i}`}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Подставить «${f.description}»`}
+                                onPress={() => fillFrom(f)}
+                                style={({ pressed }) => [
+                                    styles.frequentChip,
+                                    {
+                                        backgroundColor: theme.accentSoft,
+                                        transform: [
+                                            { scale: pressed ? 0.96 : 1 },
+                                        ],
+                                    },
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.frequentChipText,
+                                        { color: theme.accent },
+                                    ]}
+                                >
+                                    {clip(f.description)}
+                                </Text>
+                            </Pressable>
+                        ))}
+                    </ScrollView>
+                </View>
+            )}
             <Field
                 label="Описание"
                 value={description}
@@ -753,6 +836,19 @@ const styles = StyleSheet.create({
         paddingHorizontal: Spacing.md,
         paddingVertical: 12,
     },
+    frequentBlock: { gap: Spacing.sm },
+    frequentLabel: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 11,
+        letterSpacing: 2,
+    },
+    frequentRow: { gap: Spacing.sm },
+    frequentChip: {
+        borderRadius: Radii.xl,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 9,
+    },
+    frequentChipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     typeRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },
     typeChip: {
         borderWidth: 1,

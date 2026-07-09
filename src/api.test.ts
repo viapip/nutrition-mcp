@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildDashboard, mealFields } from "./api.js";
+import { buildDashboard, buildStats, mealFields } from "./api.js";
 import type { Meal, WaterEntry, WeightEntry, NutritionGoals } from "./db.js";
 
 const meal = (over: Partial<Meal>): Meal => ({
@@ -123,4 +123,85 @@ test("mealFields: PATCH null clears a macro, junk is rejected", () => {
     ).toEqual({ description: "x", meal_type: "snack" });
     expect(() => mealFields({ calories: "junk" }, true)).toThrow();
     expect(() => mealFields({ calories: -1 }, true)).toThrow();
+});
+
+test("buildStats: day fill, pending-today streak, frequent meals", () => {
+    const meals = [
+        meal({
+            id: "a1",
+            logged_at: "2026-07-04T08:00:00.000Z",
+            description: "Овсянка",
+            calories: 400,
+        }),
+        meal({
+            id: "a2",
+            logged_at: "2026-07-05T08:00:00.000Z",
+            description: "овсянка ",
+            calories: 410,
+        }),
+        meal({
+            id: "a3",
+            logged_at: "2026-07-06T12:00:00.000Z",
+            description: "Суп",
+            calories: 300,
+        }),
+    ];
+    const s = buildStats(
+        "2026-07-07",
+        7,
+        "UTC",
+        meals,
+        [],
+        [weight({})],
+        goals,
+    );
+    expect(s.start).toBe("2026-07-01");
+    expect(s.days).toHaveLength(7);
+    expect(s.days[3]).toMatchObject({
+        date: "2026-07-04",
+        calories: 400,
+        logged: true,
+    });
+    // Сегодня (07-07) пусто — стрик держится по вчерашний день: 04,05,06.
+    expect(s.streak).toEqual({ current: 3, best: 3 });
+    // «овсянка» дважды (без учёта регистра/пробелов), поля из свежей записи.
+    expect(s.frequent).toHaveLength(1);
+    expect(s.frequent[0]).toMatchObject({
+        description: "овсянка",
+        calories: 410,
+        count: 2,
+    });
+    expect(s.weight.series).toEqual([{ date: "2026-07-07", weight_g: 80000 }]);
+    expect(s.goals.daily_calories).toBe(2200);
+});
+
+test("buildStats: today logged counts in streak, empty range is zeroed", () => {
+    const s0 = buildStats("2026-07-07", 7, "UTC", [], [], [], null);
+    expect(s0.streak).toEqual({ current: 0, best: 0 });
+    expect(s0.frequent).toEqual([]);
+    expect(s0.days.every((d) => !d.logged)).toBe(true);
+
+    const s1 = buildStats(
+        "2026-07-07",
+        7,
+        "UTC",
+        [meal({ logged_at: "2026-07-07T08:00:00.000Z" })],
+        [],
+        [],
+        null,
+    );
+    expect(s1.streak.current).toBe(1);
+});
+
+test("buildStats: streak hitting the window edge is not undercounted", () => {
+    // 7 дней подряд по вчера включительно (окно days=7 + запасной день)
+    const dates = ["06-30", "07-01", "07-02", "07-03", "07-04", "07-05", "07-06"];
+    const meals = dates.map((d, i) =>
+        meal({ id: `s${i}`, logged_at: `2026-${d}T08:00:00.000Z` }),
+    );
+    const s = buildStats("2026-07-07", 7, "UTC", meals, [], [], null);
+    // Сегодня пусто, но серия упирается в край окна — полные 7, не 6.
+    expect(s.streak.current).toBe(7);
+    expect(s.days).toHaveLength(7);
+    expect(s.days[0]!.date).toBe("2026-07-01");
 });

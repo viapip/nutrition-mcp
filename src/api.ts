@@ -6,7 +6,9 @@ import {
     storeToken,
     getUserTimezone,
     getMealsByDate,
+    getMealsInRange,
     getWaterByDate,
+    getWaterInRange,
     getWeightInRange,
     getLatestWeight,
     getNutritionGoals,
@@ -31,6 +33,12 @@ import { authenticateBearer } from "./middleware.js";
 import { loginRateLimited } from "./oauth.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { todayInTz, shiftLocalDate, hourInTz, dateInTz } from "./tz.js";
+import {
+    buildDailyBuckets,
+    currentStreak,
+    longestStreak,
+    nonEmpty,
+} from "./insights.js";
 
 /**
  * Plain REST API for the mobile app — a thin layer over the same data-layer
@@ -113,6 +121,109 @@ export function buildDashboard(
             fat_g: m.fat_g,
             logged_at: m.logged_at,
         })),
+    };
+}
+
+/**
+ * Aggregates a trailing window of logs into the shape the mobile stats
+ * screen renders: per-day totals, logging streaks and frequent meals.
+ */
+export function buildStats(
+    endDate: string,
+    days: number,
+    tz: string,
+    meals: Meal[],
+    water: WaterEntry[],
+    weights: WeightEntry[],
+    goals: NutritionGoals | null,
+) {
+    const startDate = shiftLocalDate(endDate, -(days - 1));
+    // Стрики считаются с одним днём запаса перед окном: иначе серия,
+    // упирающаяся в край выборки, занижалась бы на день при пустом сегодня.
+    const buckets = buildDailyBuckets(
+        meals,
+        water,
+        shiftLocalDate(endDate, -days),
+        endDate,
+        tz,
+    );
+
+    // Утро без записей не должно гасить огонёк: если сегодня пусто,
+    // стрик считается по вчерашний день включительно.
+    const strict = currentStreak(buckets, nonEmpty);
+    const current =
+        strict > 0 ? strict : currentStreak(buckets.slice(0, -1), nonEmpty);
+
+    // Частые блюда: одинаковые описания за окно, топ-6 с count >= 2.
+    // Поля берутся из самой свежей записи (запись идёт по возрастанию даты).
+    const freq = new Map<string, { latest: Meal; count: number }>();
+    for (const m of meals) {
+        const key = m.description.trim().toLowerCase();
+        const cur = freq.get(key);
+        if (cur) {
+            cur.count += 1;
+            cur.latest = m;
+        } else {
+            freq.set(key, { latest: m, count: 1 });
+        }
+    }
+    const frequent = [...freq.values()]
+        .filter((f) => f.count >= 2)
+        .sort(
+            (a, b) =>
+                b.count - a.count ||
+                b.latest.logged_at.localeCompare(a.latest.logged_at),
+        )
+        .slice(0, 6)
+        .map(({ latest, count }) => ({
+            description: latest.description.trim(),
+            meal_type: latest.meal_type,
+            calories: latest.calories,
+            protein_g: latest.protein_g,
+            carbs_g: latest.carbs_g,
+            fat_g: latest.fat_g,
+            count,
+        }));
+
+    // Одна точка веса на локальный день — последняя запись дня побеждает.
+    const byDay = new Map<string, number>();
+    for (const w of weights) {
+        byDay.set(dateInTz(w.logged_at, tz), w.weight_g);
+    }
+    const weightSeries = [...byDay].map(([date, weight_g]) => ({
+        date,
+        weight_g,
+    }));
+
+    return {
+        start: startDate,
+        end: endDate,
+        // Запасной день в выдачу не попадает — наружу уходит ровно окно.
+        days: buckets.slice(1).map((b) => ({
+            date: b.date,
+            calories: b.calories,
+            protein_g: b.protein_g,
+            carbs_g: b.carbs_g,
+            fat_g: b.fat_g,
+            water_ml: b.waterMl,
+            logged: nonEmpty(b),
+        })),
+        streak: {
+            current: Math.min(current, days),
+            best: Math.min(longestStreak(buckets, nonEmpty), days),
+        },
+        frequent,
+        weight: {
+            series: weightSeries,
+            target_g: goals?.target_weight_g ?? null,
+        },
+        goals: {
+            daily_calories: goals?.daily_calories ?? null,
+            daily_protein_g: goals?.daily_protein_g ?? null,
+            daily_carbs_g: goals?.daily_carbs_g ?? null,
+            daily_fat_g: goals?.daily_fat_g ?? null,
+            daily_water_ml: goals?.daily_water_ml ?? null,
+        },
     };
 }
 
@@ -272,6 +383,29 @@ export function createApiRouter() {
         const asOf = day === today ? latest : (weights.at(-1) ?? null);
         return c.json(
             buildDashboard(day, tz, meals, water, weights, asOf, goals),
+        );
+    });
+
+    // Trailing-window aggregates for the stats screen. ?days=7..90 (30 дефолт).
+    // Не /api/stats — этот путь занят публичной статистикой лендинга.
+    api.get("/api/summary", authenticateBearer, async (c) => {
+        const userId = c.get("userId") as string;
+        const tz = await getUserTimezone(userId);
+        const today = todayInTz(tz);
+        const raw = Number(c.req.query("days") ?? 30);
+        const days = Number.isFinite(raw)
+            ? Math.min(90, Math.max(7, Math.round(raw)))
+            : 30;
+        // Один день сверх окна, чтобы стрик ровно в окно не резался в N-1.
+        const start = shiftLocalDate(today, -days);
+        const [meals, water, weights, goals] = await Promise.all([
+            getMealsInRange(userId, start, today, tz),
+            getWaterInRange(userId, start, today, tz),
+            getWeightInRange(userId, start, today, tz),
+            getNutritionGoals(userId),
+        ]);
+        return c.json(
+            buildStats(today, days, tz, meals, water, weights, goals),
         );
     });
 

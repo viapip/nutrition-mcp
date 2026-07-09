@@ -12,6 +12,8 @@ export function tapBuzz() {
 /** Success notification for a completed save. */
 export function successBuzz() {
     if (native) {
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+        );
     }
 }
