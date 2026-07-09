@@ -142,6 +142,56 @@ bun run dev             # starts with hot reload on http://localhost:8080
 5. Click **Connect** — sign in or register when prompted
 6. After signing in, Claude can use your nutrition tools. If you reconnect later, sign in with the same email and password to keep your data.
 
+## Mobile app (Android APK)
+
+The [`mobile/`](mobile) directory is an [Expo](https://expo.dev) (SDK 57) app —
+dashboard, meal/water/weight editors, a stats screen, and an LLM chat assistant,
+all talking to the same server. The app targets your server through the
+build-time `EXPO_PUBLIC_API_URL` variable, so point it at your own origin (it
+runs against fixture data if left unset).
+
+The native `mobile/android/` project is generated and git-ignored, so a build is
+two steps: generate the native project, then assemble a release APK.
+
+### Option A — Docker (no local Android SDK)
+
+Prebuild with Bun, then run Gradle inside the official React Native Android
+image. From the repo root:
+
+```bash
+cd mobile
+bun install
+bunx expo prebuild --platform android --clean          # generates android/
+
+docker run --rm \
+  -v "$PWD:/app" -w /app/android \
+  -e EXPO_PUBLIC_API_URL=https://your-domain.com \
+  reactnativecommunity/react-native-android:latest \
+  ./gradlew assembleRelease --no-daemon
+```
+
+### Option B — Local toolchain
+
+With a JDK and the Android SDK installed:
+
+```bash
+cd mobile
+bun install
+EXPO_PUBLIC_API_URL=https://your-domain.com bunx expo run:android --variant release
+```
+
+Either way the APK lands at:
+
+```
+mobile/android/app/build/outputs/apk/release/app-release.apk
+```
+
+> **Notes.** `EXPO_PUBLIC_API_URL` is baked in at build time — rebuild whenever
+> the server URL changes. The release build is signed with the debug key, so
+> it's ready to sideload but not for the Play Store. Before publishing, set your
+> own Android `package` and app `name` in [`mobile/app.json`](mobile/app.json) —
+> the committed values are the maintainer's.
+
 ## API Endpoints
 
 | Endpoint                                      | Description                            |
