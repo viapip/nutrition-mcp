@@ -6,7 +6,7 @@ This guide walks through enabling **"Continue with Google"** sign-in for nutriti
 > This server runs the Google OAuth redirect **itself** and verifies the
 > resulting ID token against Google's JWKS on the server. So **Google must
 > redirect back to _your_ server**: the redirect URI you register in Google is
-> `https://nutrition-mcp.com/auth/google/callback`. No third-party auth
+> `https://nutrition.viapip.com/auth/google/callback`. No third-party auth
 > provider is involved.
 
 ---
@@ -48,7 +48,7 @@ revisit to add a logo or homepage/privacy links.
 3. Name: anything (e.g. `nutrition-mcp web`).
 4. **Authorized redirect URIs** — add both:
     - `http://localhost:8080/auth/google/callback` (local dev)
-    - `https://nutrition-mcp.com/auth/google/callback` (production)
+    - `https://nutrition.viapip.com/auth/google/callback` (production)
 5. **Create**, then copy the **Client ID** and **Client secret**.
 
 > ⚠️ **Don't confuse the two URI fields.** The callback path goes in
@@ -100,7 +100,7 @@ GOOGLE_CLIENT_SECRET=<client secret from step 1.D>
 ```
 
 **Production** — set the same two variables in the deployment environment for
-`nutrition-mcp.com`.
+`nutrition.viapip.com`.
 
 Until these are set, the Google button still renders but clicking it returns
 `{"error":"google_not_configured"}`. Email/password sign-in works regardless.

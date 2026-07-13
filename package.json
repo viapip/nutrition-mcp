@@ -2,12 +2,12 @@
     "name": "nutrition-mcp",
     "version": "1.14.2",
     "description": "A remote MCP server for personal nutrition tracking. Log meals, track macros, and review nutrition history through Claude.",
-    "author": "akutishevsky",
+    "author": "viapip",
     "license": "MIT",
-    "homepage": "https://nutrition-mcp.com",
+    "homepage": "https://nutrition.viapip.com",
     "repository": {
         "type": "git",
-        "url": "https://github.com/akutishevsky/nutrition-mcp.git"
+        "url": "https://github.com/viapip/nutrition-mcp.git"
     },
     "keywords": [
         "mcp",

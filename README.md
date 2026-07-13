@@ -2,27 +2,17 @@
 
 A remote MCP server for personal nutrition tracking — log meals, track macros, log water and body weight, and review nutrition history through conversation.
 
-[Help me pay for the servers on Patreon][patreon]
-
-[patreon]: https://patreon.com/akutishevskyi?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink
-
 ## Quick Start
 
-Already hosted and ready to use — just connect it to your MCP client:
+Connect it to your MCP client:
 
 ```
-https://nutrition-mcp.com/mcp
+https://nutrition.viapip.com/mcp
 ```
 
 **On Claude.ai:** Customize → Connectors → + → Add custom connector → paste the URL → Connect
 
 On first connect you'll be asked to register with an email and password. Your data persists across reconnections.
-
-## Demo
-
-[![Demo](https://img.youtube.com/vi/Y1EHbfimQ70/maxresdefault.jpg)](https://youtube.com/shorts/Y1EHbfimQ70)
-
-Read the story behind it: [How I Replaced MyFitnessPal and Other Apps with a Single MCP Server](https://medium.com/@akutishevsky/how-i-replaced-myfitnesspal-and-other-apps-with-a-single-mcp-server-56ca5ec7d673)
 
 ## Tech Stack
 
@@ -107,7 +97,7 @@ the database reports healthy.
 | `OFF_USER_AGENT`       | Open Food Facts User-Agent for barcode lookups, in the form `AppName (email)` |
 | `PORT`                 | Server port (default: `8080`)                                                 |
 
-> **Making it yours:** The public site includes the maintainer's personal bits — Google Analytics, Patreon/GitHub/contact links, and the `nutrition-mcp.com` domain. Run `bun run depersonalize` to strip them all in one pass (analytics + CSP, the Support/Contact sections, social links, and the domain → a `your-domain.com` placeholder). Use `bun run depersonalize --dry` to preview without writing. Afterwards, swap in your own `public/og.png`, `favicon.ico`, and `apple-touch-icon.png`, and replace the domain placeholder with your real domain.
+> **Making it yours:** The public site carries this deployment's domain (`nutrition.viapip.com`). Run `bun run depersonalize` to strip personal bits in one pass (analytics + CSP, Support/Contact sections, social links, and the domain → a `your-domain.com` placeholder). Use `bun run depersonalize --dry` to preview without writing. Afterwards, swap in your own `public/og.png`, `favicon.ico`, and `apple-touch-icon.png`, and replace the domain placeholder with your real domain.
 
 Generate OAuth credentials:
 
@@ -138,7 +128,7 @@ bun run dev             # starts with hot reload on http://localhost:8080
 3. Click **Add custom connector**
 4. Fill in:
     - **Name**: Nutrition Tracker
-    - **Remote MCP Server URL**: `https://nutrition-mcp.com/mcp`
+    - **Remote MCP Server URL**: `https://nutrition.viapip.com/mcp`
 5. Click **Connect** — sign in or register when prompted
 6. After signing in, Claude can use your nutrition tools. If you reconnect later, sign in with the same email and password to keep your data.
 
@@ -189,8 +179,7 @@ mobile/android/app/build/outputs/apk/release/app-release.apk
 > **Notes.** `EXPO_PUBLIC_API_URL` is baked in at build time — rebuild whenever
 > the server URL changes. The release build is signed with the debug key, so
 > it's ready to sideload but not for the Play Store. Before publishing, set your
-> own Android `package` and app `name` in [`mobile/app.json`](mobile/app.json) —
-> the committed values are the maintainer's.
+> own Android `package` and app `name` in [`mobile/app.json`](mobile/app.json).
 
 ## API Endpoints
 

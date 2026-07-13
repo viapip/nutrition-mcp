@@ -1,0 +1,6 @@
+# Vendored agent/skill trees and generated data — not ours to format
+.agents/
+.claude/
+.opencode/
+_bmad/
+public/map-data.json

@@ -1,19 +1,19 @@
 {
     "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-    "name": "io.github.akutishevsky/nutrition-mcp",
+    "name": "io.github.viapip/nutrition-mcp",
     "title": "Nutrition MCP",
     "description": "Personal nutrition tracking — log meals, track macros, and review history through conversation.",
     "version": "1.14.2",
-    "websiteUrl": "https://nutrition-mcp.com/",
+    "websiteUrl": "https://nutrition.viapip.com/",
     "repository": {
-        "url": "https://github.com/akutishevsky/nutrition-mcp",
+        "url": "https://github.com/viapip/nutrition-mcp",
         "source": "github",
-        "id": "akutishevsky/nutrition-mcp"
+        "id": "viapip/nutrition-mcp"
     },
     "remotes": [
         {
             "type": "streamable-http",
-            "url": "https://nutrition-mcp.com/mcp"
+            "url": "https://nutrition.viapip.com/mcp"
         }
     ]
 }

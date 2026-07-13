@@ -10,7 +10,7 @@ Data lives in a self-hosted PostgreSQL (docker-compose `postgres` service; schem
 
 ## Releasing
 
-This is a remote MCP server: deploying to DigitalOcean makes code changes live for clients immediately (the MCP Registry is only discovery metadata pointing at `https://nutrition-mcp.com/mcp`, so republishing is not required for a fix to take effect). To refresh the registry listing on a release, bump the version in all three places above, merge to `main`, then push a matching `v*` tag:
+This is a remote MCP server: deploying to the production server (`nutrition.viapip.com`) makes code changes live for clients immediately (the MCP Registry is only discovery metadata pointing at the `/mcp` endpoint, so republishing is not required for a fix to take effect). To refresh the registry listing on a release, bump the version in all three places above, merge to `main`, then push a matching `v*` tag:
 
 ```
 git tag v1.13.3 && git push origin v1.13.3

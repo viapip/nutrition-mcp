@@ -195,7 +195,15 @@ test("buildStats: today logged counts in streak, empty range is zeroed", () => {
 
 test("buildStats: streak hitting the window edge is not undercounted", () => {
     // 7 дней подряд по вчера включительно (окно days=7 + запасной день)
-    const dates = ["06-30", "07-01", "07-02", "07-03", "07-04", "07-05", "07-06"];
+    const dates = [
+        "06-30",
+        "07-01",
+        "07-02",
+        "07-03",
+        "07-04",
+        "07-05",
+        "07-06",
+    ];
     const meals = dates.map((d, i) =>
         meal({ id: `s${i}`, logged_at: `2026-${d}T08:00:00.000Z` }),
     );

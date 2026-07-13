@@ -23,12 +23,18 @@
             content="Track meals, macros, weight, and nutrition history through conversation with Claude or ChatGPT. Free MCP server for AI-powered food logging, barcode scanning, and weight tracking."
         />
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="https://nutrition-mcp.com" />
-        <meta property="og:image" content="https://nutrition-mcp.com/og.png" />
+        <meta property="og:url" content="https://nutrition.viapip.com" />
+        <meta
+            property="og:image"
+            content="https://nutrition.viapip.com/og.png"
+        />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:image" content="https://nutrition-mcp.com/og.png" />
+        <meta
+            name="twitter:image"
+            content="https://nutrition.viapip.com/og.png"
+        />
         <meta
             name="twitter:title"
             content="Nutrition MCP — AI Meal &amp; Macro Tracker for Claude &amp; ChatGPT"
@@ -37,7 +43,7 @@
             name="twitter:description"
             content="Track meals, macros, weight, and nutrition history through conversation with Claude or ChatGPT. Free MCP server for AI-powered food logging, barcode scanning, and weight tracking."
         />
-        <link rel="canonical" href="https://nutrition-mcp.com" />
+        <link rel="canonical" href="https://nutrition.viapip.com" />
         <link rel="icon" href="/favicon.ico" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <meta name="theme-color" content="#4a7c59" />
@@ -47,7 +53,7 @@
                 "@type": "SoftwareApplication",
                 "name": "Nutrition MCP",
                 "description": "Track meals, macros, weight, and nutrition history through conversation with Claude or ChatGPT. Free MCP server for AI-powered food logging, barcode scanning, calorie counting, weight tracking, and diet tracking.",
-                "url": "https://nutrition-mcp.com",
+                "url": "https://nutrition.viapip.com",
                 "applicationCategory": "HealthApplication",
                 "operatingSystem": "Any",
                 "offers": {
@@ -83,7 +89,7 @@
                         "name": "Does it work with ChatGPT?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Yes. In ChatGPT on the web, open Settings → Apps, create a custom app with the server URL https://nutrition-mcp.com/mcp using OAuth, and sign in. It works on every ChatGPT plan."
+                            "text": "Yes. In ChatGPT on the web, open Settings → Apps, create a custom app with the server URL https://nutrition.viapip.com/mcp using OAuth, and sign in. It works on every ChatGPT plan."
                         }
                     },
                     {
@@ -107,7 +113,7 @@
                         "name": "Is Nutrition MCP free?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Yes, it is completely free — no premium tiers, ads, or hidden costs. You just need a Claude or ChatGPT account to connect. Donations on Patreon help cover server costs."
+                            "text": "Yes, it is completely free — no premium tiers, ads, or hidden costs. You just need a Claude or ChatGPT account to connect."
                         }
                     },
                     {
@@ -167,15 +173,7 @@
                     <a href="#install">Install</a>
                     <a href="#onboarding">Onboarding</a>
                     <a href="#try">Examples</a>
-                    <a href="#support">Support</a>
                     <a href="#faq">FAQ</a>
-                    <a href="#contact">Contact</a>
-                    <a
-                        href="https://github.com/akutishevsky/nutrition-mcp"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >GitHub</a
-                    >
                 </nav>
                 <button
                     class="theme-toggle"
@@ -205,9 +203,6 @@
                         <div class="hero-actions">
                             <a class="btn btn-primary" href="#install"
                                 >Quick install</a
-                            >
-                            <a class="btn btn-secondary" href="#support"
-                                >Support</a
                             >
                         </div>
                     </div>
@@ -430,11 +425,11 @@
                                         Paste
                                         <span class="copy-url"
                                             ><code
-                                                >https://nutrition-mcp.com/mcp</code
+                                                >https://nutrition.viapip.com/mcp</code
                                             ><button
                                                 class="copy-mini"
                                                 type="button"
-                                                data-copy="https://nutrition-mcp.com/mcp"
+                                                data-copy="https://nutrition.viapip.com/mcp"
                                                 aria-label="Copy server URL"
                                             >
                                                 <i
@@ -486,11 +481,11 @@
                                         For <strong>Connection</strong>, paste
                                         <span class="copy-url"
                                             ><code
-                                                >https://nutrition-mcp.com/mcp</code
+                                                >https://nutrition.viapip.com/mcp</code
                                             ><button
                                                 class="copy-mini"
                                                 type="button"
-                                                data-copy="https://nutrition-mcp.com/mcp"
+                                                data-copy="https://nutrition.viapip.com/mcp"
                                                 aria-label="Copy server URL"
                                             >
                                                 <i
@@ -531,7 +526,7 @@
                                 <pre class="code-block">{
   "mcpServers": {
     "nutrition": {
-      "url": "https://nutrition-mcp.com/mcp"
+      "url": "https://nutrition.viapip.com/mcp"
     }
   }
 }</pre>
@@ -544,7 +539,7 @@
                                     <code
                                         >claude mcp add --transport http
                                         nutrition
-                                        https://nutrition-mcp.com/mcp</code
+                                        https://nutrition.viapip.com/mcp</code
                                     >. Your client handles the OAuth login
                                     automatically.
                                 </p>
@@ -1536,52 +1531,6 @@
                 </div>
             </section>
 
-            <!-- Support -->
-            <section class="section" id="support">
-                <div class="container">
-                    <div class="section-head">
-                        <p class="eyebrow">Support</p>
-                        <h2 class="section-title">Help keep it running.</h2>
-                        <p class="section-sub">
-                            Nutrition MCP is free and ad-free. Patreon covers
-                            the server and database bills.
-                        </p>
-                    </div>
-                    <div class="support-grid">
-                        <div class="card support-card">
-                            <h3 class="support-tier">Free member</h3>
-                            <p class="support-price">$0</p>
-                            <p class="support-desc">
-                                Follow along — get news and updates about the
-                                server, new tools, and what's coming next.
-                            </p>
-                            <a
-                                class="btn btn-secondary"
-                                href="https://patreon.com/akutishevskyi?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                >Follow on Patreon</a
-                            >
-                        </div>
-                        <div class="card support-card support-card-paid">
-                            <h3 class="support-tier">Paid member</h3>
-                            <p class="support-price">Pay what you want</p>
-                            <p class="support-desc">
-                                Chip in for hosting and database costs so the
-                                server stays free and online for everyone.
-                            </p>
-                            <a
-                                class="btn btn-primary"
-                                href="https://patreon.com/akutishevskyi?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                >Become a supporter</a
-                            >
-                        </div>
-                    </div>
-                </div>
-            </section>
-
             <!-- Closing CTA -->
             <section class="section cta">
                 <div class="container cta-inner">
@@ -1593,44 +1542,6 @@
                     <div class="cta-actions">
                         <a class="btn btn-on-accent" href="#install"
                             >Quick install</a
-                        >
-                        <a
-                            class="btn btn-ghost-accent"
-                            href="https://github.com/akutishevsky/nutrition-mcp"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                        >
-                            <i class="fa-brands fa-github"></i> Star on GitHub
-                            <span class="gh-stars" id="gh-stars"></span>
-                        </a>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Contact -->
-            <section class="section band" id="contact">
-                <div class="container">
-                    <div class="section-head">
-                        <p class="eyebrow">Contact</p>
-                        <h2 class="section-title">Questions or feedback?</h2>
-                        <p class="section-sub">
-                            Found a bug, want a feature, or just have a
-                            question? Email me directly — I read every message.
-                        </p>
-                    </div>
-                    <div class="card contact-card">
-                        <span class="contact-icon" aria-hidden="true"
-                            ><i class="fa-solid fa-envelope"></i
-                        ></span>
-                        <a
-                            class="contact-email"
-                            href="mailto:anton@nutrition-mcp.com"
-                            >anton@nutrition-mcp.com</a
-                        >
-                        <a
-                            class="btn btn-primary"
-                            href="mailto:anton@nutrition-mcp.com"
-                            >Send an email</a
                         >
                     </div>
                 </div>
@@ -1697,15 +1608,8 @@
                             <p>
                                 Yes. Nutrition MCP is open source (MIT). You can
                                 run your own instance with your own Supabase
-                                project — the
-                                <a
-                                    href="https://github.com/akutishevsky/nutrition-mcp"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    >GitHub repository</a
-                                >
-                                includes a full self-hosting guide and a
-                                Dockerfile.
+                                project — the repository includes a full
+                                self-hosting guide and a Dockerfile.
                             </p>
                         </details>
                         <details>
@@ -1713,8 +1617,7 @@
                             <p>
                                 Yes, it is completely free — no premium tiers,
                                 ads, or hidden costs. You just need a Claude or
-                                ChatGPT account to connect. Donations on Patreon
-                                help cover server costs.
+                                ChatGPT account to connect.
                             </p>
                         </details>
                         <details>
@@ -1753,25 +1656,6 @@
                     Nutrition MCP</span
                 >
                 <nav class="footer-links">
-                    <a
-                        href="https://medium.com/@akutishevsky/how-i-replaced-myfitnesspal-and-other-apps-with-a-single-mcp-server-56ca5ec7d673"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >How I built this</a
-                    >
-                    <a
-                        href="https://youtube.com/shorts/Y1EHbfimQ70?feature=share"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >Demo</a
-                    >
-                    <a
-                        href="https://github.com/akutishevsky/nutrition-mcp"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >GitHub</a
-                    >
-                    <a href="mailto:anton@nutrition-mcp.com">Contact</a>
                     <a href="/privacy">Privacy &amp; Terms</a>
                 </nav>
             </div>
@@ -2010,25 +1894,6 @@
                         if (row) row.style.display = "none";
                         if (map) map.style.display = "none";
                     });
-
-                // ---------- live GitHub star count ----------
-                var ghEl = document.getElementById("gh-stars");
-                if (ghEl) {
-                    fetch(
-                        "https://api.github.com/repos/akutishevsky/nutrition-mcp",
-                    )
-                        .then(function (r) {
-                            return r.ok ? r.json() : null;
-                        })
-                        .then(function (d) {
-                            if (d && typeof d.stargazers_count === "number") {
-                                ghEl.textContent =
-                                    "· ★ " +
-                                    d.stargazers_count.toLocaleString("en-US");
-                            }
-                        })
-                        .catch(function () {});
-                }
 
                 // ---------- "try saying" chat carousel ----------
                 var carousel = document.getElementById("try-carousel");
