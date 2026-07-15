@@ -7,6 +7,10 @@ import {
     signInUser,
     signUpUser,
     insertMeal,
+    listDishes,
+    insertDish,
+    updateDish,
+    deleteDish,
     consumeAuthCode,
     consumeRefreshToken,
     getUserIdByToken,
@@ -366,6 +370,91 @@ describe("insertMeal idempotency", () => {
         expect(
             insertMeal("user-1", { description: "Soup", meal_type: "lunch" }),
         ).rejects.toThrow("Failed to insert meal");
+    });
+});
+
+// ---------- Dishes catalog ----------
+
+function dishRow(overrides: Record<string, unknown> = {}) {
+    return {
+        id: "dish-1",
+        user_id: "user-1",
+        name: "Protein shake",
+        meal_type: "snack",
+        calories: 200,
+        protein_g: "30.0", // numeric comes back as string from the driver
+        carbs_g: "5.0",
+        fat_g: "3.0",
+        created_at: new Date("2026-07-07T10:00:00.000Z"),
+        ...overrides,
+    };
+}
+
+describe("dishes CRUD", () => {
+    test("listDishes returns the catalog ordered case-insensitively by name", async () => {
+        const calls = installFakeSql([{ rows: [dishRow()] }]);
+        const dishes = await listDishes("user-1");
+        expect(dishes).toHaveLength(1);
+        expect(dishes[0]!.name).toBe("Protein shake");
+        expect(dishes[0]!.protein_g).toBe(30); // string → number on the way out
+        const text = calls[0]!.text.toLowerCase();
+        expect(text).toContain("from dishes");
+        expect(text).toContain("order by lower(name)");
+        expect(calls[0]!.values).toContain("user-1");
+    });
+
+    test("insertDish upserts on the case-insensitive name", async () => {
+        const calls = installFakeSql([{ rows: [dishRow()] }]);
+        const dish = await insertDish("user-1", {
+            name: "Protein shake",
+            meal_type: "snack",
+            calories: 200,
+            protein_g: 30,
+        });
+        expect(dish.id).toBe("dish-1");
+        const text = calls[0]!.text.toLowerCase();
+        expect(text).toContain("insert into dishes");
+        expect(text).toContain("on conflict (user_id, lower(name))");
+        expect(text).toContain("do update set");
+    });
+
+    test("insertDish trims the name and defaults omitted macros to null", async () => {
+        const calls = installFakeSql([{ rows: [dishRow()] }]);
+        await insertDish("user-1", { name: "  Bun  " });
+        expect(calls[0]!.values).toContain("Bun");
+        // meal_type + all four macros bound as null
+        expect(calls[0]!.values.filter((v) => v === null)).toHaveLength(5);
+    });
+
+    test("updateDish patches only the provided fields", async () => {
+        const calls = installFakeSql([{ rows: [dishRow({ calories: 250 })] }]);
+        const dish = await updateDish("user-1", "dish-1", { calories: 250 });
+        expect(dish.calories).toBe(250);
+        const text = calls[0]!.text.toLowerCase();
+        expect(text).toContain("update dishes set");
+        expect(text).toContain("where id =");
+    });
+
+    test("updateDish with no fields reads the row back instead of writing", async () => {
+        const calls = installFakeSql([{ rows: [dishRow()] }]);
+        const dish = await updateDish("user-1", "dish-1", {});
+        expect(dish.id).toBe("dish-1");
+        expect(calls[0]!.text.toLowerCase()).toContain("select * from dishes");
+    });
+
+    test("updateDish throws when the row is missing or not the caller's", async () => {
+        installFakeSql([{ rows: [] }]);
+        expect(
+            updateDish("user-1", "ghost", { calories: 100 }),
+        ).rejects.toThrow("Failed to update dish");
+    });
+
+    test("deleteDish reports whether a row was removed", async () => {
+        installFakeSql([{ rows: [{ id: "dish-1" }] }]);
+        expect(await deleteDish("user-1", "dish-1")).toBe(true);
+
+        installFakeSql([{ rows: [] }]);
+        expect(await deleteDish("user-1", "ghost")).toBe(false);
     });
 });
 

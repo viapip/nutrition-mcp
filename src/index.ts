@@ -270,6 +270,30 @@ try {
     console.error("Startup migration failed:", err);
 }
 
+// ponytail: idempotent startup DDL for the dishes catalog — db/init only runs
+// on a fresh data dir, so existing deployments create it here. Awaited so no
+// request can hit a missing table mid-migration.
+try {
+    await getSql()`
+        create table if not exists dishes (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references users (id) on delete cascade,
+            name text not null,
+            meal_type text check (
+                meal_type = any (array['breakfast', 'lunch', 'dinner', 'snack'])
+            ),
+            calories integer,
+            protein_g numeric(6, 1),
+            carbs_g numeric(6, 1),
+            fat_g numeric(6, 1),
+            created_at timestamptz not null default now()
+        )`;
+    await getSql()`create index if not exists idx_dishes_user_id on dishes (user_id)`;
+    await getSql()`create unique index if not exists uniq_dishes_user_lower_name on dishes (user_id, lower(name))`;
+} catch (err) {
+    console.error("Startup migration (dishes) failed:", err);
+}
+
 // Periodically delete expired meal-export files from the storage bucket.
 startExportCleanup();
 

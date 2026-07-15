@@ -26,14 +26,18 @@ import {
     type Theme,
 } from "@/constants/theme";
 import {
+    addDish,
     addMeal,
     addWeight,
+    getDishes,
     getStats,
     patchMeal,
     patchWeight,
+    removeDish,
     removeMeal,
     removeWeight,
     saveGoals,
+    type Dish,
     type FrequentMeal,
     type GoalsInput,
     type MealRow,
@@ -327,6 +331,8 @@ function MealForm({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(false);
     const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
+    const [dishes, setDishes] = useState<Dish[]>([]);
+    const [remember, setRemember] = useState(false);
     // ref-замок: busy — async-стейт, быстрый двойной тап проскакивает до
     // ре-рендера и шлёт две записи.
     const lock = useRef(false);
@@ -346,6 +352,12 @@ function MealForm({
                     router.replace("/login");
                 }
             });
+        // Свой каталог: ошибку глотаем — редактор важнее чипов.
+        getDishes()
+            .then((d) => {
+                if (alive) setDishes(d);
+            })
+            .catch(() => {});
         return () => {
             alive = false;
         };
@@ -359,6 +371,24 @@ function MealForm({
         setProtein(numText(f.protein_g));
         setCarbs(numText(f.carbs_g));
         setFat(numText(f.fat_g));
+    };
+
+    const fillFromDish = (d: Dish) => {
+        tapBuzz();
+        setDescription(d.name);
+        if (d.meal_type) setMealType(d.meal_type);
+        setCalories(numText(d.calories));
+        setProtein(numText(d.protein_g));
+        setCarbs(numText(d.carbs_g));
+        setFat(numText(d.fat_g));
+    };
+
+    // Long-press по чипу — убрать блюдо из каталога (оптимистично).
+    const forgetDish = (d: Dish) => {
+        confirmDelete(`Убрать «${d.name}» из моих блюд?`, () => {
+            setDishes((cur) => cur.filter((x) => x.id !== d.id));
+            void removeDish(d.id).catch(() => {});
+        });
     };
 
     const save = async () => {
@@ -386,6 +416,14 @@ function MealForm({
             };
             if (meal) await patchMeal(meal.id, fields);
             else await addMeal(fields);
+            // Приём записан — блюдо в каталог фоном; его сбой не рушит сохранение.
+            if (remember) {
+                void addDish({
+                    name: fields.description,
+                    meal_type: fields.meal_type,
+                    ...nums,
+                }).catch(() => {});
+            }
             onDone();
         } catch {
             setError(true);
@@ -413,6 +451,53 @@ function MealForm({
 
     return (
         <>
+            {!meal && dishes.length > 0 && (
+                <View style={styles.frequentBlock}>
+                    <Text
+                        style={[
+                            styles.frequentLabel,
+                            { color: theme.inkSecondary },
+                        ]}
+                    >
+                        МОИ БЛЮДА
+                    </Text>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        keyboardShouldPersistTaps="handled"
+                        contentContainerStyle={styles.frequentRow}
+                    >
+                        {dishes.map((d) => (
+                            <Pressable
+                                key={d.id}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Подставить «${d.name}»`}
+                                onPress={() => fillFromDish(d)}
+                                onLongPress={() => forgetDish(d)}
+                                delayLongPress={350}
+                                style={({ pressed }) => [
+                                    styles.frequentChip,
+                                    {
+                                        backgroundColor: theme.accentSoft,
+                                        transform: [
+                                            { scale: pressed ? 0.96 : 1 },
+                                        ],
+                                    },
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.frequentChipText,
+                                        { color: theme.accent },
+                                    ]}
+                                >
+                                    {clip(d.name)}
+                                </Text>
+                            </Pressable>
+                        ))}
+                    </ScrollView>
+                </View>
+            )}
             {!meal && frequent.length > 0 && (
                 <View style={styles.frequentBlock}>
                     <Text
@@ -542,6 +627,33 @@ function MealForm({
                     />
                 </View>
             </View>
+            <Pressable
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: remember }}
+                onPress={() => {
+                    tapBuzz();
+                    setRemember((v) => !v);
+                }}
+                style={[
+                    styles.rememberChip,
+                    {
+                        backgroundColor: remember
+                            ? theme.accentSoft
+                            : theme.surface,
+                    },
+                ]}
+            >
+                <Text
+                    style={[
+                        styles.rememberText,
+                        { color: remember ? theme.accent : theme.inkSecondary },
+                    ]}
+                >
+                    {remember
+                        ? "⭐ Запомнить как моё блюдо"
+                        : "☆ Запомнить как моё блюдо"}
+                </Text>
+            </Pressable>
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
                     Проверь описание и числа, потом попробуй снова.
@@ -866,6 +978,13 @@ const styles = StyleSheet.create({
         paddingVertical: 9,
     },
     frequentChipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    rememberChip: {
+        alignSelf: "flex-start",
+        borderRadius: Radii.pill,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 9,
+    },
+    rememberText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     typeRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },
     typeChip: {
         borderRadius: Radii.pill,

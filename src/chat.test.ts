@@ -55,6 +55,18 @@ const waterRow = {
     idempotency_key: "auto:x",
 };
 
+const dishRow = {
+    id: "d1",
+    user_id: "u1",
+    name: "Protein shake",
+    meal_type: "snack",
+    calories: 200,
+    protein_g: "30.0",
+    carbs_g: "5.0",
+    fat_g: "3.0",
+    created_at: "2026-07-07T10:00:00Z",
+};
+
 test("runChatTurn executes a tool call and returns the final text", async () => {
     const sqlCalls = installFakeSql([
         { rows: [] }, // getUserTimezone → profile miss → UTC
@@ -322,6 +334,87 @@ test("prose claiming a proposal without a tool call gets nudged into propose_mea
     const last = secondBody.messages[secondBody.messages.length - 1]!;
     expect(last.role).toBe("system");
     expect(last.content).toContain("CHECK FAILED");
+});
+
+test("assistant consults the dish catalog before proposing a saved item", async () => {
+    installFakeSql([
+        { rows: [] }, // getUserTimezone → UTC
+        { rows: [dishRow] }, // list_dishes
+    ]);
+    fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: { name: "list_dishes", arguments: "{}" },
+                },
+            ],
+        },
+        // Model reuses the saved macros verbatim in the proposal.
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c2",
+                    function: {
+                        name: "propose_meal",
+                        arguments:
+                            '{"description":"Protein shake","meal_type":"snack","calories":200,"protein_g":30,"carbs_g":5,"fat_g":3}',
+                    },
+                },
+            ],
+        },
+        {
+            role: "assistant",
+            content: "Это твой протеиновый коктейль — 200 ккал.",
+        },
+    ]);
+
+    const events: string[] = [];
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "выпил протеиновый коктейль" }],
+        "test-key",
+        (name) => events.push(name),
+    );
+
+    expect(events).toEqual(["list_dishes", "propose_meal"]);
+    expect(reply.proposals).toEqual([
+        {
+            description: "Protein shake",
+            meal_type: "snack",
+            calories: 200,
+            protein_g: 30,
+            carbs_g: 5,
+            fat_g: 3,
+        },
+    ]);
+    expect(reply.message).toContain("коктейль");
+});
+
+test("executeTool save_dish upserts the catalog without logging a meal", async () => {
+    const calls = installFakeSql([
+        { rows: [dishRow] }, // insertDish upsert returning
+    ]);
+    const res = JSON.parse(
+        await executeTool("u1", "save_dish", {
+            name: "Protein shake",
+            meal_type: "snack",
+            calories: 200,
+            protein_g: 30,
+        }),
+    );
+    expect(res.saved).toBe(true);
+    expect(res.dish.name).toBe("Protein shake");
+    expect(res.dish.protein_g).toBe(30); // driver string normalized to number
+    // A single upsert targeting the case-insensitive name conflict.
+    expect(calls.length).toBe(1);
+    const text = calls[0]!.text.toLowerCase();
+    expect(text).toContain("insert into dishes");
+    expect(text).toContain("on conflict (user_id, lower(name))");
 });
 
 test("innocent suggestion prose is returned as-is without a nudge", async () => {

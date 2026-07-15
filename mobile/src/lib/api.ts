@@ -51,6 +51,27 @@ export interface MealFields {
     fat_g?: number | null;
 }
 
+/** Блюдо из личного каталога: КБЖУ — на одну порцию, meal_type — подсказка. */
+export interface Dish {
+    id: string;
+    name: string;
+    meal_type: MealType | null;
+    calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+}
+
+/** Поля для сохранения блюда — id/created_at ставит сервер. */
+export interface DishInput {
+    name: string;
+    meal_type?: MealType | null;
+    calories?: number | null;
+    protein_g?: number | null;
+    carbs_g?: number | null;
+    fat_g?: number | null;
+}
+
 export interface WaterRow {
     id: string;
     amount_ml: number;
@@ -491,6 +512,57 @@ export async function saveGoals(goals: GoalsInput): Promise<void> {
     });
 }
 
+// ----- dishes -----
+
+/** Личный каталог, отсортирован по имени (как отдаёт сервер). */
+export async function getDishes(): Promise<Dish[]> {
+    if (MOCK) {
+        return structuredClone(MOCK_DISHES).sort((a, b) =>
+            a.name.localeCompare(b.name),
+        );
+    }
+    const { dishes } = await request<{ dishes: Dish[] }>("/api/dishes");
+    return dishes;
+}
+
+/** Дубликат по имени сервер обновляет на месте — «запомнить» повторно не плодит копии. */
+export async function addDish(
+    dish: DishInput,
+    idempotencyKey?: string,
+): Promise<Dish> {
+    if (MOCK) {
+        const name = dish.name.trim();
+        const existing = MOCK_DISHES.find(
+            (d) => d.name.toLowerCase() === name.toLowerCase(),
+        );
+        const row: Dish = {
+            id: existing?.id ?? `mock-${Date.now()}`,
+            name,
+            meal_type: dish.meal_type ?? null,
+            calories: dish.calories ?? null,
+            protein_g: dish.protein_g ?? null,
+            carbs_g: dish.carbs_g ?? null,
+            fat_g: dish.fat_g ?? null,
+        };
+        if (existing) Object.assign(existing, row);
+        else MOCK_DISHES.push(row);
+        return structuredClone(row);
+    }
+    const { dish: saved } = await request<{ dish: Dish }>("/api/dishes", {
+        method: "POST",
+        body: JSON.stringify({ ...dish, idempotency_key: idempotencyKey }),
+    });
+    return saved;
+}
+
+export async function removeDish(id: string): Promise<void> {
+    if (MOCK) {
+        MOCK_DISHES = MOCK_DISHES.filter((d) => d.id !== id);
+        return;
+    }
+    await request(`/api/dishes/${id}`, { method: "DELETE" });
+}
+
 // ---------- Fixtures (mock mode) ----------
 
 const MOCK_STATS: StatsData = (() => {
@@ -658,3 +730,33 @@ const MOCK_DASHBOARD: DashboardData = {
         },
     ],
 };
+
+let MOCK_DISHES: Dish[] = [
+    {
+        id: "d1",
+        name: "Протеиновый коктейль",
+        meal_type: "snack",
+        calories: 180,
+        protein_g: 30,
+        carbs_g: 8,
+        fat_g: 3,
+    },
+    {
+        id: "d2",
+        name: "Булочка с корицей",
+        meal_type: "snack",
+        calories: 340,
+        protein_g: 6,
+        carbs_g: 52,
+        fat_g: 12,
+    },
+    {
+        id: "d3",
+        name: "Овсянка с черникой",
+        meal_type: "breakfast",
+        calories: 420,
+        protein_g: 14,
+        carbs_g: 58,
+        fat_g: 16,
+    },
+];

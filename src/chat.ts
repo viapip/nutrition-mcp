@@ -18,7 +18,10 @@ import {
     getLatestWeight,
     getNutritionGoals,
     upsertNutritionGoals,
+    listDishes,
+    insertDish,
     type MealInput,
+    type DishInput,
 } from "./db.js";
 import { buildDashboard, mealFields } from "./api.js";
 import { normalizeBarcode, lookupBarcode } from "./foods.js";
@@ -296,6 +299,38 @@ const TOOLS = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "list_dishes",
+            description:
+                "The user's saved catalog of recurring dishes with per-portion macros. Consult it before estimating a named or recurring item.",
+            parameters: { type: "object", properties: {} },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "save_dish",
+            description:
+                "Save (or update) a dish in the user's catalog for reuse. Macros are per portion; saving an existing name overwrites it. This does NOT log a meal.",
+            parameters: {
+                type: "object",
+                properties: {
+                    name: { type: "string" },
+                    meal_type: {
+                        type: "string",
+                        enum: ["breakfast", "lunch", "dinner", "snack"],
+                    },
+                    calories: { type: "number" },
+                    protein_g: { type: "number" },
+                    carbs_g: { type: "number" },
+                    fat_g: { type: "number" },
+                },
+                required: ["name"],
+            },
+        },
+    },
 ];
 
 function positive(n: unknown): number {
@@ -503,6 +538,26 @@ export async function executeTool(
                     food ? { found: true, food } : { found: false },
                 );
             }
+            case "list_dishes":
+                return JSON.stringify({ dishes: await listDishes(userId) });
+            case "save_dish": {
+                const name = String(args.name ?? "").trim();
+                if (!name) throw new Error("name required");
+                const num = (k: string) =>
+                    args[k] == null ? undefined : positive(args[k]);
+                const dish = await insertDish(userId, {
+                    name,
+                    meal_type:
+                        args.meal_type == null
+                            ? undefined
+                            : (args.meal_type as DishInput["meal_type"]),
+                    calories: num("calories"),
+                    protein_g: num("protein_g"),
+                    carbs_g: num("carbs_g"),
+                    fat_g: num("fat_g"),
+                });
+                return JSON.stringify({ saved: true, dish });
+            }
             default:
                 throw new Error(`unknown tool: ${name}`);
         }
@@ -601,6 +656,12 @@ export async function runChatTurn(
                 "Estimate calories/macros yourself when the user doesn't give numbers, and say you estimated. " +
                 "For packaged products with a barcode (typed, or readable on a photo of the package), call lookup_barcode first and scale to the amount eaten. " +
                 "When the user sends a food photo, identify the dish and portion size, estimate calories and macros, and call propose_meal. " +
+                "SAVED DISHES: the user keeps a personal catalog of recurring dishes. When the user " +
+                "reports eating something that sounds like a named/recurring item (a product or a " +
+                "dish they might have saved), call list_dishes BEFORE estimating. If exactly one " +
+                "saved dish matches, use its macros verbatim in propose_meal and mention the match. " +
+                "If several could match, ask which one. If none match, estimate as usual. When the " +
+                "user asks to remember a dish (or confirms a new recurring item), call save_dish. " +
                 `Today is ${todayInTz(tz)} (${tz}). ` +
                 "Reply in the user's language, in one or two short sentences.",
         },

@@ -481,6 +481,135 @@ export async function updateMeal(
     }
 }
 
+// ---------- Dishes ----------
+
+export interface Dish {
+    id: string;
+    user_id: string;
+    name: string;
+    meal_type: string | null;
+    calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    created_at: string;
+}
+
+export interface DishInput {
+    name: string;
+    // null clears the stored value on update (insert treats it as "not given")
+    meal_type?: "breakfast" | "lunch" | "dinner" | "snack" | null;
+    calories?: number | null;
+    protein_g?: number | null;
+    carbs_g?: number | null;
+    fat_g?: number | null;
+}
+
+function mapDish(row: Record<string, unknown>): Dish {
+    return {
+        id: row.id as string,
+        user_id: row.user_id as string,
+        name: row.name as string,
+        meal_type: (row.meal_type as string | null) ?? null,
+        calories: numOrNull(row.calories),
+        protein_g: numOrNull(row.protein_g),
+        carbs_g: numOrNull(row.carbs_g),
+        fat_g: numOrNull(row.fat_g),
+        created_at: iso(row.created_at),
+    };
+}
+
+export async function listDishes(userId: string): Promise<Dish[]> {
+    const db = getSql();
+    try {
+        const rows = await db`
+            select * from dishes
+            where user_id = ${userId}
+            order by lower(name) asc`;
+        return rows.map(mapDish);
+    } catch (err) {
+        throw new Error(`Failed to get dishes: ${errMsg(err)}`);
+    }
+}
+
+// Upsert by (user_id, lower(name)): saving a name that already exists overwrites
+// it, so "remember this dish" twice never piles up duplicates.
+export async function insertDish(
+    userId: string,
+    input: DishInput,
+): Promise<Dish> {
+    const db = getSql();
+    try {
+        const [row] = await db`
+            insert into dishes (
+                user_id, name, meal_type, calories, protein_g, carbs_g, fat_g
+            ) values (
+                ${userId},
+                ${decodeEscapeSequences(input.name.trim())},
+                ${input.meal_type ?? null},
+                ${input.calories ?? null},
+                ${input.protein_g ?? null},
+                ${input.carbs_g ?? null},
+                ${input.fat_g ?? null}
+            )
+            on conflict (user_id, lower(name)) do update set
+                name = excluded.name,
+                meal_type = excluded.meal_type,
+                calories = excluded.calories,
+                protein_g = excluded.protein_g,
+                carbs_g = excluded.carbs_g,
+                fat_g = excluded.fat_g
+            returning *`;
+        return mapDish(row);
+    } catch (err) {
+        throw new Error(`Failed to save dish: ${errMsg(err)}`);
+    }
+}
+
+export async function updateDish(
+    userId: string,
+    id: string,
+    fields: Partial<DishInput>,
+): Promise<Dish> {
+    const update: Record<string, unknown> = {};
+    if (fields.name !== undefined)
+        update.name = decodeEscapeSequences(fields.name.trim());
+    if (fields.meal_type !== undefined) update.meal_type = fields.meal_type;
+    if (fields.calories !== undefined) update.calories = fields.calories;
+    if (fields.protein_g !== undefined) update.protein_g = fields.protein_g;
+    if (fields.carbs_g !== undefined) update.carbs_g = fields.carbs_g;
+    if (fields.fat_g !== undefined) update.fat_g = fields.fat_g;
+
+    const db = getSql();
+    try {
+        const [row] =
+            Object.keys(update).length === 0
+                ? await db`
+                      select * from dishes
+                      where id = ${id} and user_id = ${userId}`
+                : await db`
+                      update dishes set ${db(update)}
+                      where id = ${id} and user_id = ${userId}
+                      returning *`;
+        if (!row) throw new Error("dish not found");
+        return mapDish(row);
+    } catch (err) {
+        throw new Error(`Failed to update dish: ${errMsg(err)}`);
+    }
+}
+
+export async function deleteDish(userId: string, id: string): Promise<boolean> {
+    const db = getSql();
+    try {
+        const rows = await db`
+            delete from dishes where id = ${id} and user_id = ${userId}
+            returning id`;
+        return rows.length > 0;
+    } catch (err) {
+        throw new Error(`Failed to delete dish: ${errMsg(err)}`);
+    }
+}
+
 // ---------- Profiles ----------
 
 export interface Profile {

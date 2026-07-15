@@ -272,6 +272,8 @@ function dayLabel(at: number): string {
 const TOOL_STATUS: Record<string, string> = {
     propose_meal: "Готовлю карточку…",
     log_meal: "Записываю еду…",
+    list_dishes: "Смотрю твои блюда…",
+    save_dish: "Запоминаю блюдо…",
     log_water: "Записываю воду…",
     log_weight: "Записываю вес…",
     get_dashboard: "Смотрю твой день…",

@@ -75,6 +75,30 @@ create unique index uniq_meals_user_idem on meals (user_id, idempotency_key)
 where
     idempotency_key is not null;
 
+-- Personal catalog of recurring dishes (protein shake, home-baked buns, own
+-- recipes). Macros are per portion; meal_type is an optional hint. Used by the
+-- mobile meal editor as a quick-pick and by the chat assistant before it
+-- estimates a named/recurring item.
+create table dishes (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references users (id) on delete cascade,
+    name text not null,
+    meal_type text check (
+        meal_type = any (array['breakfast', 'lunch', 'dinner', 'snack'])
+    ),
+    calories integer,
+    protein_g numeric(6, 1),
+    carbs_g numeric(6, 1),
+    fat_g numeric(6, 1),
+    created_at timestamptz not null default now()
+);
+
+create index idx_dishes_user_id on dishes (user_id);
+
+-- One saved dish per name (case-insensitive) so "remember this" upserts
+-- instead of piling up duplicates.
+create unique index uniq_dishes_user_lower_name on dishes (user_id, lower(name));
+
 -- Hydration log. One row per drink; amount_ml is always positive.
 create table water_log (
     id uuid primary key default gen_random_uuid(),

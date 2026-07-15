@@ -23,8 +23,13 @@ import {
     insertWeight,
     updateWeight,
     deleteWeight,
+    listDishes,
+    insertDish,
+    updateDish,
+    deleteDish,
     type Meal,
     type MealInput,
+    type DishInput,
     type WaterEntry,
     type WeightEntry,
     type NutritionGoals,
@@ -286,6 +291,38 @@ export function mealFields(
     return out;
 }
 
+const DISH_NAME_MAX = 200;
+
+/** Extracts dish fields from a request body; `partial` allows omitting all. */
+export function dishFields(
+    body: Record<string, unknown>,
+    partial: boolean,
+): Partial<DishInput> {
+    const out: Partial<DishInput> = {};
+    if (body.name !== undefined || !partial) {
+        const n = String(body.name ?? "").trim();
+        if (!n || n.length > DISH_NAME_MAX) throw new Error("bad name");
+        out.name = n;
+    }
+    // meal_type is always optional; null clears the hint, otherwise it must be
+    // a known type.
+    if (body.meal_type !== undefined) {
+        if (body.meal_type === null) {
+            out.meal_type = null;
+        } else if (MEAL_TYPES.includes(body.meal_type as never)) {
+            out.meal_type = body.meal_type as DishInput["meal_type"];
+        } else {
+            throw new Error("bad meal_type");
+        }
+    }
+    for (const k of ["calories", "protein_g", "carbs_g", "fat_g"] as const) {
+        if (body[k] === undefined) continue;
+        // null clears a macro; a present value must be positive
+        out[k] = body[k] === null ? null : posNum(body[k]);
+    }
+    return out;
+}
+
 /** kg from the request body → integer grams, rejecting implausible values. */
 function weightGrams(v: unknown): number {
     const g = Math.round(posNum(v) * 1000);
@@ -536,6 +573,67 @@ export function createApiRouter() {
 
     api.delete("/api/weight/:id", authenticateBearer, async (c) => {
         const deleted = await deleteWeight(
+            c.get("userId") as string,
+            c.req.param("id"),
+        );
+        return deleted
+            ? c.json({ ok: true })
+            : c.json({ error: "not_found" }, 404);
+    });
+
+    // ----- saved dishes catalog (quick-pick in the editor, hints in chat) -----
+
+    api.get("/api/dishes", authenticateBearer, async (c) => {
+        const dishes = await listDishes(c.get("userId") as string);
+        return c.json({
+            dishes: dishes.map((d) => ({
+                id: d.id,
+                name: d.name,
+                meal_type: d.meal_type,
+                calories: d.calories,
+                protein_g: d.protein_g,
+                carbs_g: d.carbs_g,
+                fat_g: d.fat_g,
+            })),
+        });
+    });
+
+    // Upsert by (user_id, lower(name)) makes a re-POST idempotent on its own,
+    // so an idempotency_key is unnecessary here.
+    api.post("/api/dishes", authenticateBearer, async (c) => {
+        try {
+            const fields = dishFields(await jsonBody(c), false);
+            const dish = await insertDish(
+                c.get("userId") as string,
+                fields as DishInput,
+            );
+            return c.json({ dish });
+        } catch {
+            return c.json({ error: "invalid_request" }, 400);
+        }
+    });
+
+    api.patch("/api/dishes/:id", authenticateBearer, async (c) => {
+        let fields: Partial<DishInput>;
+        try {
+            fields = dishFields(await jsonBody(c), true);
+        } catch {
+            return c.json({ error: "invalid_request" }, 400);
+        }
+        try {
+            const dish = await updateDish(
+                c.get("userId") as string,
+                c.req.param("id"),
+                fields,
+            );
+            return c.json({ dish });
+        } catch {
+            return c.json({ error: "not_found" }, 404);
+        }
+    });
+
+    api.delete("/api/dishes/:id", authenticateBearer, async (c) => {
+        const deleted = await deleteDish(
             c.get("userId") as string,
             c.req.param("id"),
         );
