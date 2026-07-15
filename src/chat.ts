@@ -568,6 +568,14 @@ async function callLlm(
     return msg;
 }
 
+// Reply text that CLAIMS a meal card exists / asks the user to confirm — the
+// past-tense surface forms the model produces when mimicking its own history
+// ("Предложила: …", "Подтвердите для сохранения"). Deliberately excludes the
+// infinitive ("могу предложить…" is an innocent suggestion, not a claim). A
+// residual false positive only costs one extra LLM round with a nudge.
+const CLAIMS_PROPOSAL =
+    /предложил|предложен|подтверд|карточк|proposed|confirm/i;
+
 /** One chat turn: system prompt + history → tool loop → final assistant text.
  * `onTool` fires before each tool executes so a streaming caller can narrate. */
 export async function runChatTurn(
@@ -608,12 +616,35 @@ export async function runChatTurn(
 
     let logged = false;
     let toolSeq = 0;
+    let nudged = false;
     const proposals: MealProposal[] = [];
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
             const msg = await callLlm(messages, apiKey, signal);
             if (!msg.tool_calls?.length) {
-                return { message: msg.content ?? "", proposals };
+                const text = msg.content ?? "";
+                // Guard against prose-mimicry: the model copies its earlier
+                // "Предложила: …" replies from history without actually calling
+                // propose_meal, so no card appears and the meal is lost. If the
+                // reply claims a proposal/confirmation but this turn produced
+                // neither a card nor a write, bounce it back once.
+                if (
+                    !nudged &&
+                    !proposals.length &&
+                    !logged &&
+                    CLAIMS_PROPOSAL.test(text)
+                ) {
+                    nudged = true;
+                    console.log("[chat] proposal claimed without tool — nudge");
+                    messages.push(msg);
+                    messages.push({
+                        role: "system",
+                        content:
+                            "CHECK FAILED: your reply claims a proposal or asks to confirm, but no propose_meal tool call happened this turn — the user sees NO card and NOTHING is saved. If (and only if) the user reported food they actually ATE, call propose_meal now (one call per dish), then reply in one short sentence. If they did not (you were suggesting ideas, answering a question), do NOT call any tool — just repeat your answer.",
+                    });
+                    continue;
+                }
+                return { message: text, proposals };
             }
             messages.push(msg);
             for (const call of msg.tool_calls) {
@@ -653,6 +684,12 @@ export async function runChatTurn(
                               args,
                               idem,
                           );
+                // Observability: tool-call outcomes are otherwise invisible in
+                // the runtime logs (analytics only covers MCP tools).
+                const failed = result.startsWith('{"error"');
+                console.log(
+                    `[chat] tool ${call.function.name} ${failed ? `err: ${JSON.parse(result).error}` : "ok"}`,
+                );
                 if (/^\{"(logged|updated|deleted|saved)":true/.test(result)) {
                     logged = true;
                 }

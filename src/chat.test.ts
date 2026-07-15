@@ -279,3 +279,66 @@ test("propose_meal returns a card and writes nothing to the database", async () 
     ]);
     expect(reply.message).toContain("карточку");
 });
+
+test("prose claiming a proposal without a tool call gets nudged into propose_meal", async () => {
+    installFakeSql([{ rows: [] }]); // timezone lookup only
+    const llmBodies = fakeLlm([
+        // Round 1: mimics history — claims a card, calls nothing.
+        {
+            role: "assistant",
+            content:
+                "Предложила: 150 г черешни — 75 ккал. Подтвердите для сохранения.",
+        },
+        // Round 2 (after the nudge): actually proposes.
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: {
+                        name: "propose_meal",
+                        arguments:
+                            '{"description":"Черешня, 150 г","meal_type":"snack","calories":75}',
+                    },
+                },
+            ],
+        },
+        { role: "assistant", content: "Прикинула 75 ккал — проверь карточку." },
+    ]);
+
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "Грам 150 черешни" }],
+        "test-key",
+    );
+    expect(reply.proposals).toEqual([
+        { description: "Черешня, 150 г", meal_type: "snack", calories: 75 },
+    ]);
+    // Round 2 request carries the corrective system message.
+    const secondBody = llmBodies[1] as {
+        messages: { role: string; content?: string }[];
+    };
+    const last = secondBody.messages[secondBody.messages.length - 1]!;
+    expect(last.role).toBe("system");
+    expect(last.content).toContain("CHECK FAILED");
+});
+
+test("innocent suggestion prose is returned as-is without a nudge", async () => {
+    installFakeSql([{ rows: [] }]);
+    const llmBodies = fakeLlm([
+        {
+            role: "assistant",
+            content: "Могу предложить куриную грудку с рисом или омлет.",
+        },
+    ]);
+
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "что мне поесть на ужин?" }],
+        "test-key",
+    );
+    expect(reply.message).toContain("куриную грудку");
+    expect(reply.proposals).toEqual([]);
+    expect(llmBodies.length).toBe(1); // single round — guard stayed quiet
+});
