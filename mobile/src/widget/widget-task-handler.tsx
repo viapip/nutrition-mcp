@@ -12,7 +12,13 @@ export async function buildWidget(
     try {
         const token = await getToken();
         if (!token) return <NutritionWidget width={info.width} state="login" />;
-        const data = await getDashboard();
+        // У headless-таска нативный лимит 30 с — зависший fetch должен упасть раньше
+        const data = await Promise.race([
+            getDashboard(),
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("widget timeout")), 10000),
+            ),
+        ]);
         return <NutritionWidget width={info.width} data={data} />;
     } catch (err) {
         console.warn("[widget] build failed:", err);

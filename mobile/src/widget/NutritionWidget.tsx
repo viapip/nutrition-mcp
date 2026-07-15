@@ -1,3 +1,7 @@
+// React Compiler вставляет useMemoCache, а библиотека зовёт компонент как
+// обычную функцию вне рендерера → Invalid hook call и пустой виджет
+"use no memo";
+
 import { FlexWidget, TextWidget } from "react-native-android-widget";
 
 import type { DashboardData } from "@/lib/api";
