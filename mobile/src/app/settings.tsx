@@ -33,7 +33,6 @@ function KeyStatus({ hasKey, theme }: { hasKey: boolean; theme: Theme }) {
                     backgroundColor: hasKey
                         ? theme.accentSoft
                         : theme.surfaceElevated,
-                    borderColor: hasKey ? theme.accent : theme.hairline,
                 },
             ]}
         >
@@ -187,23 +186,29 @@ export default function SettingsScreen() {
                         )}
 
                         {/* Key input */}
-                        <View style={styles.form}>
+                        <View
+                            style={[
+                                styles.form,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
                             <Text
                                 style={[
-                                    styles.label,
-                                    { color: theme.inkSecondary },
+                                    styles.eyebrow,
+                                    styles.sectionEyebrow,
+                                    { color: theme.inkMuted },
                                 ]}
                             >
-                                {hasKey ? "Заменить ключ" : "API-ключ"}
+                                {hasKey ? "ЗАМЕНИТЬ КЛЮЧ" : "API-КЛЮЧ"}
                             </Text>
                             <TextInput
                                 style={[
                                     styles.input,
                                     {
-                                        backgroundColor: theme.surfaceElevated,
+                                        backgroundColor: theme.surface,
                                         borderColor: focused
                                             ? theme.accent
-                                            : theme.hairline,
+                                            : theme.surface,
                                         color: theme.ink,
                                     },
                                 ]}
@@ -304,12 +309,6 @@ export default function SettingsScreen() {
                         </View>
 
                         {/* Account */}
-                        <View
-                            style={[
-                                styles.divider,
-                                { backgroundColor: theme.hairline },
-                            ]}
-                        />
                         <Pressable
                             accessibilityRole="button"
                             accessibilityLabel="Выйти из аккаунта"
@@ -399,8 +398,13 @@ const styles = StyleSheet.create({
     statusText: { flex: 1, gap: 2 },
     statusTitle: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     statusHint: { fontFamily: Fonts.sans, fontSize: 13, lineHeight: 18 },
-    form: { marginTop: Spacing.lg, gap: Spacing.sm },
-    label: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    form: {
+        marginTop: Spacing.lg,
+        gap: Spacing.sm,
+        borderRadius: Radii.lg,
+        padding: Spacing.lg,
+    },
+    sectionEyebrow: { marginTop: 0, marginBottom: Spacing.xs },
     input: {
         fontFamily: Fonts.sans,
         fontSize: 16,
@@ -411,7 +415,7 @@ const styles = StyleSheet.create({
     },
     fieldHint: { fontFamily: Fonts.sans, fontSize: 12, lineHeight: 17 },
     saveBtn: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingVertical: 16,
         alignItems: "center",
         marginTop: Spacing.sm,
@@ -420,11 +424,11 @@ const styles = StyleSheet.create({
     removeBtn: { alignSelf: "center", paddingVertical: Spacing.sm },
     removeText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     note: { fontFamily: Fonts.sansMedium, fontSize: 14, textAlign: "center" },
-    divider: { height: 1, marginVertical: Spacing.xl },
     logoutRow: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
+        marginTop: Spacing.xl,
     },
     logout: { fontFamily: Fonts.sansMedium, fontSize: 15 },
     logoutArrow: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },

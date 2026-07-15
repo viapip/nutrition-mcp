@@ -3,7 +3,7 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Alert,
@@ -35,6 +35,7 @@ import {
 import {
     addMeal,
     getSettings,
+    getToken,
     newIdempotencyKey,
     sendChat,
     type ChatMessage,
@@ -50,10 +51,8 @@ type Proposal = MealFields & {
     idem?: string;
 };
 
-// Локальная надстройка над проводным форматом: время, флаг сбоя, карточки и
-// ключ хода живут только в сторадже/стейте, в запрос уходят голые {role,
-// content}. turnKey на сообщении пользователя переживает перезапуск, поэтому
-// retry после ремоунта дедупится сервером так же, как в той же сессии.
+// В запрос уходят голые {role, content}; at/failed/proposals/turnKey — локальные.
+// turnKey переживает перезапуск → retry дедупится сервером и после ремоунта.
 type Msg = ChatMessage & {
     at?: number;
     failed?: boolean;
@@ -130,14 +129,8 @@ function proposalNote(m: Msg): string {
         .join("");
 }
 
-/**
- * Keep only the newest photo in the request payload: older images are
- * replaced with a text stub so history stays under the server's size caps
- * while the model still knows a photo was there. Oldest messages are
- * dropped once the history outgrows the client caps. Local bookkeeping
- * (`at`, `failed`) never leaves the device: error bubbles are dropped,
- * the rest are rebuilt as plain {role, content}.
- */
+/** В payload остаётся только новейшее фото (старые → текстовая заглушка),
+ * история режется под капы сервера; at/failed не покидают устройство. */
 function slimHistory(messages: Msg[]): ChatMessage[] {
     const live = messages.filter((m) => !m.failed);
     const lastWithImage = live.findLastIndex((m) => messageImage(m) != null);
@@ -165,11 +158,8 @@ function slimHistory(messages: Msg[]): ChatMessage[] {
     return out;
 }
 
-/**
- * Photos live on disk as file:// URIs (light enough to persist and restore),
- * but the server needs data URLs. Inline the surviving photo right before
- * sending; a missing file degrades to the usual text stub.
- */
+/** На диске file://, серверу нужен data URL — инлайним перед отправкой;
+ * пропавший файл → заглушка. */
 async function toPayload(messages: ChatMessage[]): Promise<ChatMessage[]> {
     return Promise.all(
         messages.map(async (m) => {
@@ -202,13 +192,8 @@ async function toPayload(messages: ChatMessage[]): Promise<ChatMessage[]> {
     );
 }
 
-/**
- * Reap photo files no message references anymore (history is capped at 60
- * entries, and a picked-but-never-sent photo leaks its file). Only files
- * older than an hour are touched — the timestamp lives in the filename —
- * so anything written this session (including a camera shot recovered
- * after Android killed the activity) is never swept out from under us.
- */
+/** Чистка фото без ссылок из истории. Только старше часа (метка в имени) —
+ * свежий кадр, в т.ч. восстановленный после kill активности, не выметаем. */
 async function sweepOrphanPhotos(referenced: ChatMessage[]): Promise<void> {
     const dir = FileSystem.documentDirectory;
     if (Platform.OS === "web" || !dir) return;
@@ -246,10 +231,7 @@ function notify(title: string, message: string) {
 
 const CHAT_KEY = "nutrition_chat";
 
-/**
- * file:// photo refs are tiny and persist as-is (so old chats keep their
- * pictures); raw data URLs (web) are megabytes — those become text stubs.
- */
+/** file:// реф лёгкий — храним как есть; data URL (web) весит мегабайты → заглушка. */
 function storable(messages: Msg[]): Msg[] {
     return messages.slice(-60).map((m) => {
         if (typeof m.content === "string") return m;
@@ -318,12 +300,8 @@ function macroLine(p: MealFields): string {
     return parts.join("  ·  ");
 }
 
-/**
- * Карточка подтверждения. «Записать» пишет напрямую через REST — без второго
- * прогона LLM, цифры уходят ровно те, что на карточке. Кнопки живут только
- * пока сообщение последнее (active): дальше диалог ушёл, модель предложит
- * заново — так исключаются записи по устаревшим карточкам.
- */
+/** Карточка подтверждения: «Записать» пишет напрямую через REST (без второго
+ * прогона LLM); кнопки только на последнем сообщении — старые карточки не пишутся. */
 function ProposalCard({
     p,
     theme,
@@ -339,16 +317,7 @@ function ProposalCard({
 }) {
     const macros = macroLine(p);
     return (
-        <View
-            style={[
-                styles.card,
-                {
-                    backgroundColor: theme.surfaceElevated,
-                    borderColor:
-                        p.resolved === "saved" ? theme.accent : theme.hairline,
-                },
-            ]}
-        >
+        <View style={[styles.card, { backgroundColor: theme.surfaceElevated }]}>
             <View style={styles.cardHead}>
                 <Text style={[styles.cardType, { color: theme.inkMuted }]}>
                     {(MEAL_TYPE_RU[p.meal_type] ?? p.meal_type).toUpperCase()}
@@ -463,7 +432,7 @@ function TypingDots({ theme }: { theme: Theme }) {
                     style={[
                         styles.dot,
                         {
-                            backgroundColor: theme.accent,
+                            backgroundColor: theme.inkMuted,
                             opacity: pulse.interpolate({
                                 inputRange: [0, 1],
                                 outputRange: i === 1 ? [0.9, 0.3] : [0.3, 0.9],
@@ -479,6 +448,9 @@ function TypingDots({ theme }: { theme: Theme }) {
 export default function ChatScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
+    // Deep-link из виджета/quick actions: "camera" — сразу открыть съёмку,
+    // "text" — сфокусировать поле ввода.
+    const { compose } = useLocalSearchParams<{ compose?: string }>();
 
     const [messages, setMessages] = useState<Msg[]>([]);
     const [hydrated, setHydrated] = useState(false);
@@ -500,14 +472,22 @@ export default function ChatScreen() {
     const abortRef = useRef<AbortController | null>(null);
     const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Surface "assistant is off" before the first send, not after it fails.
-    // On focus, not mount: the banner leads to settings and must clear on
-    // the way back once a key is saved.
+    // «Ассистент выключен» — до первой отправки; на focus, чтобы баннер гас
+    // после сохранения ключа в настройках
     useFocusEffect(
         useCallback(() => {
-            getSettings()
-                .then((s) => setNeedsKey(!s.chat_available && !s.has_llm_key))
-                .catch(() => {});
+            // Виджет может открыть чат до логина — гейтим по токену, как дашборд.
+            getToken().then((t) => {
+                if (!t) {
+                    router.replace("/login");
+                    return;
+                }
+                getSettings()
+                    .then((s) =>
+                        setNeedsKey(!s.chat_available && !s.has_llm_key),
+                    )
+                    .catch(() => {});
+            });
         }, []),
     );
 
@@ -522,9 +502,8 @@ export default function ChatScreen() {
                     setMessages((cur) => (cur.length ? cur : restored));
                 }
                 void sweepOrphanPhotos(restored);
-                // Only arm the mirror after a *successful* read: a transient
-                // read error must not let the mirror overwrite stored history
-                // with an empty array (irreversible loss). Next launch retries.
+                // Зеркало — только после успешного чтения: иначе сбой чтения
+                // затёр бы сохранённую историю пустым массивом
                 setHydrated(true);
             })
             .catch(() => {});
@@ -667,6 +646,20 @@ export default function ChatScreen() {
             { text: "Отмена", style: "cancel" },
         ]);
     };
+
+    // Deep-link отрабатывает один раз на открытие (ref-замок), не на ре-рендер.
+    const composeHandled = useRef(false);
+    useEffect(() => {
+        if (composeHandled.current || !compose) return;
+        composeHandled.current = true;
+        if (compose === "camera") {
+            void pickImage(Platform.OS !== "web");
+        } else if (compose === "text") {
+            // Клавиатуре нужен тик после монтирования, чтобы поднять поле.
+            setTimeout(() => inputRef.current?.focus(), 250);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- pickImage не мемоизирован; ref-замок выше даёт ровно один запуск
+    }, [compose]);
 
     // Один ход ассистента поверх готовой истории; и send, и retry идут сюда.
     // ref-замок: два быстрых тапа читают одно и то же устаревшее busy.
@@ -943,10 +936,7 @@ export default function ChatScreen() {
                             onPress={() => router.push("/settings")}
                             style={[
                                 styles.keyBanner,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.accent,
-                                },
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             <Text
@@ -1088,7 +1078,7 @@ export default function ChatScreen() {
                                                           styles.bubbleMine,
                                                           {
                                                               backgroundColor:
-                                                                  theme.accent,
+                                                                  theme.accentSoft,
                                                           },
                                                       ]
                                                     : [
@@ -1096,10 +1086,6 @@ export default function ChatScreen() {
                                                           {
                                                               backgroundColor:
                                                                   theme.surfaceElevated,
-                                                              borderColor:
-                                                                  m.failed
-                                                                      ? theme.danger
-                                                                      : theme.hairline,
                                                           },
                                                       ],
                                             ]}
@@ -1125,11 +1111,9 @@ export default function ChatScreen() {
                                                     style={[
                                                         styles.bubbleText,
                                                         {
-                                                            color: mine
-                                                                ? theme.onAccent
-                                                                : m.failed
-                                                                  ? theme.inkSecondary
-                                                                  : theme.ink,
+                                                            color: m.failed
+                                                                ? theme.inkSecondary
+                                                                : theme.ink,
                                                         },
                                                     ]}
                                                 >
@@ -1197,7 +1181,6 @@ export default function ChatScreen() {
                                         {
                                             backgroundColor:
                                                 theme.surfaceElevated,
-                                            borderColor: theme.hairline,
                                         },
                                     ]}
                                 >
@@ -1208,7 +1191,7 @@ export default function ChatScreen() {
                                                 style={[
                                                     styles.statusText,
                                                     {
-                                                        color: theme.inkSecondary,
+                                                        color: theme.inkMuted,
                                                     },
                                                 ]}
                                             >
@@ -1232,10 +1215,7 @@ export default function ChatScreen() {
                                 }}
                                 style={[
                                     styles.jump,
-                                    {
-                                        backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
-                                    },
+                                    { backgroundColor: theme.surfaceElevated },
                                 ]}
                             >
                                 <Text
@@ -1252,10 +1232,7 @@ export default function ChatScreen() {
                             <View
                                 style={[
                                     styles.copied,
-                                    {
-                                        backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
-                                    },
+                                    { backgroundColor: theme.surfaceElevated },
                                 ]}
                             >
                                 <Text
@@ -1275,10 +1252,7 @@ export default function ChatScreen() {
                         <View style={styles.preview}>
                             <Image
                                 source={{ uri: pendingImage }}
-                                style={[
-                                    styles.previewImage,
-                                    { borderColor: theme.hairline },
-                                ]}
+                                style={styles.previewImage}
                             />
                             <Pressable
                                 accessibilityRole="button"
@@ -1286,10 +1260,7 @@ export default function ChatScreen() {
                                 onPress={() => setPendingImage(null)}
                                 style={[
                                     styles.previewRemove,
-                                    {
-                                        backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
-                                    },
+                                    { backgroundColor: theme.surfaceElevated },
                                 ]}
                             >
                                 <Text
@@ -1356,14 +1327,14 @@ export default function ChatScreen() {
                             onPress={attach}
                             style={({ pressed }) => [
                                 styles.attach,
-                                { backgroundColor: theme.accentSoft },
+                                { borderColor: theme.hairline },
                                 pressed && { transform: [{ scale: 0.92 }] },
                             ]}
                         >
                             <Text
                                 style={[
                                     styles.attachIcon,
-                                    { color: theme.accent },
+                                    { color: theme.inkSecondary },
                                 ]}
                             >
                                 ✚
@@ -1377,7 +1348,7 @@ export default function ChatScreen() {
                                     backgroundColor: theme.surfaceElevated,
                                     borderColor: inputFocused
                                         ? theme.accent
-                                        : theme.hairline,
+                                        : theme.surfaceElevated,
                                     color: theme.ink,
                                 },
                             ]}
@@ -1483,7 +1454,6 @@ const styles = StyleSheet.create({
     keyBanner: {
         marginHorizontal: Spacing.lg,
         marginBottom: Spacing.sm,
-        borderWidth: 1,
         borderRadius: Radii.lg,
         padding: Spacing.md,
     },
@@ -1511,7 +1481,7 @@ const styles = StyleSheet.create({
     emptyHint: { fontFamily: Fonts.sans, fontSize: 14, lineHeight: 20 },
     chips: { gap: Spacing.sm, marginTop: Spacing.sm },
     chip: {
-        borderRadius: Radii.lg,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 10,
         alignSelf: "flex-start",
@@ -1527,7 +1497,7 @@ const styles = StyleSheet.create({
     },
     retryChip: {
         alignSelf: "flex-start",
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 8,
     },
@@ -1538,7 +1508,6 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
         elevation: 4,
@@ -1551,10 +1520,13 @@ const styles = StyleSheet.create({
         position: "absolute",
         top: Spacing.sm,
         alignSelf: "center",
-        borderWidth: 1,
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 7,
+        elevation: 4,
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
     },
     copiedText: { fontFamily: Fonts.sansMedium, fontSize: 12 },
     suggestStrip: { flexGrow: 0 },
@@ -1564,7 +1536,7 @@ const styles = StyleSheet.create({
         paddingBottom: Spacing.sm,
     },
     suggestChip: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 8,
     },
@@ -1586,7 +1558,6 @@ const styles = StyleSheet.create({
     bubbleMine: { alignSelf: "flex-end", borderBottomRightRadius: Radii.sm },
     bubbleTheirs: {
         alignSelf: "flex-start",
-        borderWidth: 1,
         borderBottomLeftRadius: Radii.sm,
     },
     bubbleText: { fontFamily: Fonts.sans, fontSize: 15, lineHeight: 21 },
@@ -1600,7 +1571,6 @@ const styles = StyleSheet.create({
     card: {
         alignSelf: "flex-start",
         width: "85%",
-        borderWidth: 1,
         borderRadius: Radii.lg,
         padding: Spacing.md,
         gap: 6,
@@ -1622,16 +1592,16 @@ const styles = StyleSheet.create({
     cardButtons: { flexDirection: "row", gap: Spacing.sm, marginTop: 4 },
     cardYes: {
         flex: 1,
-        borderRadius: Radii.md,
-        paddingVertical: 10,
+        borderRadius: Radii.pill,
+        paddingVertical: 14,
         alignItems: "center",
     },
     cardYesText: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
     cardNo: {
         flex: 1,
         borderWidth: 1,
-        borderRadius: Radii.md,
-        paddingVertical: 10,
+        borderRadius: Radii.pill,
+        paddingVertical: 14,
         alignItems: "center",
     },
     cardNoText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
@@ -1644,7 +1614,6 @@ const styles = StyleSheet.create({
         width: 72,
         height: 72,
         borderRadius: Radii.md,
-        borderWidth: 1,
     },
     previewRemove: {
         position: "absolute",
@@ -1653,9 +1622,12 @@ const styles = StyleSheet.create({
         width: 22,
         height: 22,
         borderRadius: 11,
-        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
+        elevation: 3,
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
     },
     previewRemoveText: { fontSize: 14, lineHeight: 16 },
     inputBar: {
@@ -1671,6 +1643,7 @@ const styles = StyleSheet.create({
         width: 44,
         height: 44,
         borderRadius: 22,
+        borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
     },

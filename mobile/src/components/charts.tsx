@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, {
     Circle,
     Defs,
@@ -13,112 +12,10 @@ import Svg, {
     Text as SvgText,
 } from "react-native-svg";
 
-import { Fonts, Spacing, TabularNums, type Theme } from "@/constants/theme";
+import { Fonts, type Theme } from "@/constants/theme";
 
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
-const AnimatedPath = Animated.createAnimatedComponent(Path);
-
-/**
- * Chart marks follow dataviz specs: 2px lines, >=8px end markers with a 2px
- * surface ring, bars <=24px with 4px rounded data-ends square at the baseline,
- * 2px surface gaps. Values always direct-labeled (contrast relief channel).
- */
-
-// ---------- Calorie arc (hero gauge) ----------
-
-interface CalorieArcProps {
-    eaten: number;
-    goal: number | null;
-    theme: Theme;
-    width: number;
-}
-
-/** Полукруглый гейдж дня: гигантская цифра внутри дуги. */
-export function CalorieArc({ eaten, goal, theme, width }: CalorieArcProps) {
-    const stroke = 14;
-    const r = Math.min((width - stroke) / 2, 150);
-    const cx = width / 2;
-    const cy = r + stroke / 2;
-    const halfLen = Math.PI * r;
-    const progress = goal ? Math.min(eaten / goal, 1) : 0;
-    const over = goal != null && eaten > goal;
-    const color = over ? theme.danger : theme.accent;
-
-    const [anim] = useState(() => new Animated.Value(0));
-    useEffect(() => {
-        Animated.timing(anim, {
-            toValue: progress,
-            duration: 700,
-            useNativeDriver: false, // svg props can't ride the native driver
-        }).start();
-    }, [progress, anim]);
-    const dashOffset = anim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [halfLen, 0],
-    });
-
-    const d = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
-    const height = cy + stroke / 2;
-
-    return (
-        <View
-            accessible
-            accessibilityLabel={`Калории: ${Math.round(eaten)}${goal ? ` из ${goal}` : ""}`}
-            style={{ width, height }}
-        >
-            <Svg width={width} height={height}>
-                <Path
-                    d={d}
-                    stroke={color}
-                    strokeOpacity={0.16}
-                    strokeWidth={stroke}
-                    strokeLinecap="round"
-                    fill="none"
-                />
-                {goal != null && (
-                    <AnimatedPath
-                        d={d}
-                        stroke={color}
-                        strokeWidth={stroke}
-                        strokeLinecap="round"
-                        fill="none"
-                        strokeDasharray={`${halfLen} ${halfLen}`}
-                        strokeDashoffset={dashOffset}
-                    />
-                )}
-            </Svg>
-            <View style={[arcStyles.center, { width, height }]}>
-                <Text
-                    style={[arcStyles.value, TabularNums, { color: theme.ink }]}
-                >
-                    {Math.round(eaten).toLocaleString("ru-RU")}
-                </Text>
-                <Text style={[arcStyles.caption, { color: theme.inkMuted }]}>
-                    {goal != null
-                        ? `из ${goal.toLocaleString("ru-RU")} ккал`
-                        : "ккал"}
-                </Text>
-            </View>
-        </View>
-    );
-}
-
-const arcStyles = StyleSheet.create({
-    center: {
-        position: "absolute",
-        top: 0,
-        left: 0,
-        alignItems: "center",
-        justifyContent: "flex-end",
-        paddingBottom: 2,
-    },
-    value: {
-        fontFamily: Fonts.displayBold,
-        fontSize: 44,
-        lineHeight: 52,
-    },
-    caption: { fontFamily: Fonts.sansMedium, fontSize: 13, lineHeight: 18 },
-});
+// Марки по dataviz-спеке: линии 2px, маркеры >=8px с кольцом, бары с 4px
+// скруглением у вершины, зазоры 2px, значения подписаны напрямую
 
 // ---------- Week strip ----------
 
@@ -144,7 +41,7 @@ function weekdayLetter(iso: string): string {
         .slice(0, 2);
 }
 
-/** Неделя одним взглядом: кольцо-прогресс на каждый день, тап — перейти. */
+/** Неделя: выбранный день — пилюля accent, сегодня — подчёркивание, перебор — danger. */
 export function WeekStrip({
     days,
     selected,
@@ -153,13 +50,13 @@ export function WeekStrip({
     width,
     onSelect,
 }: WeekStripProps) {
-    // Ужимаем кольца на узких экранах, чтобы 7 дней не наехали друг на друга
+    // Ужимаем узлы на узких экранах, чтобы 7 дней не наехали друг на друга
     const size = Math.max(
-        24,
-        Math.min(34, Math.floor(width / days.length) - 8),
+        30,
+        Math.min(40, Math.floor(width / days.length) - 6),
     );
-    const strokeW = 3.5;
-    const r = (size - strokeW) / 2;
+    const strokeW = 3;
+    const r = (size - strokeW) / 2 - 1;
     const c = 2 * Math.PI * r;
 
     return (
@@ -184,23 +81,29 @@ export function WeekStrip({
                     >
                         <View
                             style={[
-                                weekStyles.ringWrap,
-                                { borderRadius: size / 2 + 2 },
-                                active && {
-                                    backgroundColor: theme.accentSoft,
+                                weekStyles.node,
+                                {
+                                    width: size,
+                                    height: size,
+                                    borderRadius: size / 2,
                                 },
+                                active && { backgroundColor: theme.accent },
                             ]}
                         >
-                            <Svg width={size} height={size}>
-                                <Circle
-                                    cx={size / 2}
-                                    cy={size / 2}
-                                    r={r}
-                                    stroke={theme.hairline}
-                                    strokeWidth={strokeW}
-                                    fill="none"
-                                />
-                                {d.pct != null && d.pct > 0 && (
+                            {!active && d.pct != null && d.pct > 0 && (
+                                <Svg
+                                    width={size}
+                                    height={size}
+                                    style={StyleSheet.absoluteFill}
+                                >
+                                    <Circle
+                                        cx={size / 2}
+                                        cy={size / 2}
+                                        r={r}
+                                        stroke={theme.hairline}
+                                        strokeWidth={strokeW}
+                                        fill="none"
+                                    />
                                     <Circle
                                         cx={size / 2}
                                         cy={size / 2}
@@ -215,26 +118,39 @@ export function WeekStrip({
                                         }
                                         transform={`rotate(-90 ${size / 2} ${size / 2})`}
                                     />
-                                )}
-                            </Svg>
+                                </Svg>
+                            )}
+                            <Text
+                                style={[
+                                    weekStyles.letter,
+                                    {
+                                        color: active
+                                            ? theme.onAccent
+                                            : isToday
+                                              ? theme.ink
+                                              : theme.inkMuted,
+                                        fontFamily:
+                                            active || isToday
+                                                ? Fonts.sansSemiBold
+                                                : Fonts.sansMedium,
+                                    },
+                                ]}
+                            >
+                                {weekdayLetter(d.date)}
+                            </Text>
                         </View>
-                        <Text
+                        {/* Метка «сегодня», когда просматривают другой день */}
+                        <View
                             style={[
-                                weekStyles.letter,
+                                weekStyles.underline,
                                 {
-                                    color: active
-                                        ? theme.accent
-                                        : isToday
-                                          ? theme.ink
-                                          : theme.inkMuted,
-                                    fontFamily: active
-                                        ? Fonts.sansSemiBold
-                                        : Fonts.sansMedium,
+                                    backgroundColor:
+                                        isToday && !active
+                                            ? theme.accent
+                                            : "transparent",
                                 },
                             ]}
-                        >
-                            {weekdayLetter(d.date)}
-                        </Text>
+                        />
                     </Pressable>
                 );
             })}
@@ -247,137 +163,10 @@ const weekStyles = StyleSheet.create({
         flexDirection: "row",
         justifyContent: "space-between",
     },
-    day: { alignItems: "center", gap: 4 },
-    ringWrap: { padding: 2 },
-    letter: { fontSize: 11, lineHeight: 14 },
-});
-
-// ---------- Macro ring ----------
-
-interface MacroRingProps {
-    label: string;
-    eaten: number;
-    goal: number | null;
-    unit: string;
-    color: string;
-    theme: Theme;
-    size?: number;
-}
-
-export function MacroRing({
-    label,
-    eaten,
-    goal,
-    unit,
-    color,
-    theme,
-    size = 92,
-}: MacroRingProps) {
-    const stroke = 8;
-    const r = (size - stroke) / 2;
-    const c = 2 * Math.PI * r;
-    const progress = goal ? Math.min(eaten / goal, 1) : 0;
-    const over = goal != null && eaten > goal;
-
-    // Sweep to the new value (e.g. returning from chat after logging a meal).
-    const [anim] = useState(() => new Animated.Value(0));
-    useEffect(() => {
-        Animated.timing(anim, {
-            toValue: progress,
-            duration: 600,
-            useNativeDriver: false, // svg props can't ride the native driver
-        }).start();
-    }, [progress, anim]);
-    const dashOffset = anim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [c, 0],
-    });
-
-    return (
-        <View
-            style={ringStyles.wrap}
-            accessible
-            accessibilityLabel={`${label}: ${Math.round(eaten)} из ${goal ?? "—"} ${unit}`}
-        >
-            <Svg width={size} height={size}>
-                {/* Track: lighter step of the same hue */}
-                <Circle
-                    cx={size / 2}
-                    cy={size / 2}
-                    r={r}
-                    stroke={color}
-                    strokeOpacity={0.18}
-                    strokeWidth={stroke}
-                    fill="none"
-                />
-                {goal != null && (
-                    <AnimatedCircle
-                        cx={size / 2}
-                        cy={size / 2}
-                        r={r}
-                        stroke={color}
-                        strokeWidth={stroke}
-                        fill="none"
-                        strokeLinecap="round"
-                        strokeDasharray={`${c} ${c}`}
-                        strokeDashoffset={dashOffset}
-                        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-                    />
-                )}
-            </Svg>
-            <View style={[ringStyles.center, { height: size }]}>
-                <Text
-                    style={[
-                        ringStyles.value,
-                        TabularNums,
-                        { color: theme.ink },
-                    ]}
-                >
-                    {Math.round(eaten)}
-                </Text>
-                <Text
-                    style={[
-                        ringStyles.unit,
-                        { color: over ? theme.danger : theme.inkMuted },
-                    ]}
-                >
-                    {goal
-                        ? over
-                            ? `+${Math.round(eaten - goal)} ${unit}`
-                            : `/ ${goal} ${unit}`
-                        : unit}
-                </Text>
-            </View>
-            <View style={ringStyles.labelRow}>
-                <View style={[ringStyles.swatch, { backgroundColor: color }]} />
-                <Text style={[ringStyles.label, { color: theme.inkSecondary }]}>
-                    {label}
-                </Text>
-            </View>
-        </View>
-    );
-}
-
-const ringStyles = StyleSheet.create({
-    wrap: { alignItems: "center" },
-    center: {
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    value: { fontFamily: Fonts.display, fontSize: 17, lineHeight: 22 },
-    unit: { fontFamily: Fonts.sans, fontSize: 11, lineHeight: 14 },
-    labelRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        marginTop: Spacing.sm,
-    },
-    swatch: { width: 8, height: 8, borderRadius: 4 },
-    label: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    day: { alignItems: "center", gap: 5 },
+    node: { alignItems: "center", justifyContent: "center" },
+    letter: { fontSize: 12, lineHeight: 16 },
+    underline: { width: 14, height: 3, borderRadius: 2 },
 });
 
 // ---------- Weight sparkline ----------

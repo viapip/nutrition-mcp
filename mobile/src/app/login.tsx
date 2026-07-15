@@ -93,7 +93,8 @@ export default function LoginScreen() {
         styles.input,
         {
             backgroundColor: theme.surfaceElevated,
-            borderColor: focused === field ? theme.accent : theme.hairline,
+            borderColor:
+                focused === field ? theme.accent : theme.surfaceElevated,
             color: theme.ink,
         },
     ];
@@ -107,20 +108,11 @@ export default function LoginScreen() {
                         ЕДА · ВОДА · ВЕС
                     </Text>
                     <Text style={[styles.title, { color: theme.ink }]}>
-                        ЕШЬ.{"\n"}ПЕЙ.{"\n"}
-                        <Text style={{ color: theme.accent }}>ВЗВЕСЬСЯ.</Text>
+                        ЕШЬ.{"\n"}ПЕЙ.{"\n"}ВЗВЕСЬСЯ.
                     </Text>
 
                     <View style={styles.form}>
-                        <View
-                            style={[
-                                styles.segment,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
-                            ]}
-                        >
+                        <View style={styles.tabs}>
                             {(
                                 [
                                     ["signin", "Войти"],
@@ -136,21 +128,19 @@ export default function LoginScreen() {
                                             selected: active,
                                         }}
                                         onPress={() => switchMode(value)}
-                                        style={[
-                                            styles.segItem,
-                                            active && {
-                                                backgroundColor:
-                                                    theme.accentSoft,
-                                            },
-                                        ]}
+                                        hitSlop={8}
+                                        style={styles.tab}
                                     >
                                         <Text
                                             style={[
-                                                styles.segText,
+                                                styles.tabText,
                                                 {
                                                     color: active
-                                                        ? theme.accent
+                                                        ? theme.ink
                                                         : theme.inkMuted,
+                                                    fontFamily: active
+                                                        ? Fonts.sansSemiBold
+                                                        : Fonts.sansMedium,
                                                 },
                                             ]}
                                         >
@@ -269,39 +259,32 @@ const styles = StyleSheet.create({
         marginTop: Spacing.md,
     },
     title: {
-        fontFamily: Fonts.display,
-        fontSize: 34,
-        lineHeight: 43,
+        fontFamily: Fonts.displayBold,
+        fontSize: 40,
+        lineHeight: 44,
         marginTop: Spacing.xs,
         marginBottom: Spacing.lg,
     },
     form: { gap: Spacing.sm },
-    segment: {
+    tabs: {
         flexDirection: "row",
-        borderWidth: 1,
-        borderRadius: Radii.xl,
-        padding: Spacing.xs,
+        gap: Spacing.lg,
         marginBottom: Spacing.xs,
     },
-    segItem: {
-        flex: 1,
-        alignItems: "center",
-        paddingVertical: 10,
-        borderRadius: Radii.xl,
-    },
-    segText: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    tab: { paddingVertical: Spacing.xs },
+    tabText: { fontSize: 15 },
     input: {
         fontFamily: Fonts.sans,
         fontSize: 16,
         borderWidth: 1,
-        borderRadius: Radii.md,
-        paddingHorizontal: Spacing.md,
-        paddingVertical: 14,
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.lg,
+        paddingVertical: 15,
     },
     error: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     button: {
-        borderRadius: Radii.xl,
-        paddingVertical: 16,
+        borderRadius: Radii.pill,
+        paddingVertical: 18,
         alignItems: "center",
         marginTop: Spacing.sm,
     },

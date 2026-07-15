@@ -29,12 +29,31 @@
             [
                 "expo-splash-screen",
                 {
-                    "backgroundColor": "#208AEF",
+                    "backgroundColor": "#0e100b",
                     "image": "./assets/images/splash-icon.png",
                     "imageWidth": 76
                 }
             ],
-            "expo-secure-store"
+            "expo-secure-store",
+            "expo-quick-actions",
+            [
+                "react-native-android-widget",
+                {
+                    "widgets": [
+                        {
+                            "name": "NutritionDay",
+                            "label": "Nutrition — день",
+                            "description": "Остаток калорий, макросы и быстрый вход в чат",
+                            "minWidth": "250dp",
+                            "minHeight": "110dp",
+                            "targetCellWidth": 4,
+                            "targetCellHeight": 2,
+                            "resizeMode": "horizontal",
+                            "updatePeriodMillis": 1800000
+                        }
+                    ]
+                }
+            ]
         ],
         "experiments": {
             "typedRoutes": true,

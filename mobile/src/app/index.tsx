@@ -14,8 +14,6 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-    CalorieArc,
-    MacroRing,
     WaterBars,
     WeekStrip,
     WeightSparkline,
@@ -55,14 +53,10 @@ const WATER_PRESETS = [150, 250, 500];
 // после генерации .expo/types — до тех пор нужен каст.
 const STATS_ROUTE = "/stats" as Href;
 
-// Стрик меняется максимум раз в день — не дёргаем getStats на каждый фокус.
-// Ключ — «сегодня» по серверу (поле end ответа), чтобы смена дня в профильной
-// таймзоне не оставляла вчерашний бейдж до локальной полуночи.
-// editorDone/вода/повтор сбрасывают: первая запись дня меняет серию.
+// Кэш стрика по «сегодня» сервера (end); любая запись дня сбрасывает
 let streakCache: { day: string; current: number } | null = null;
 
-// Кэш — модульная глобаль и переживает logout; login.tsx зовёт это при
-// монтировании, иначе следующий пользователь на девайсе увидит чужой стрик.
+// Глобаль переживает logout — login.tsx сбрасывает, иначе виден чужой стрик
 export function resetStreakCache() {
     streakCache = null;
 }
@@ -195,14 +189,78 @@ function DashboardSkeleton({
                 <Animated.View style={block(styles.skelLine)} />
                 <Animated.View style={block(styles.skelTitle)} />
                 <Animated.View style={block(styles.skelStrip)} />
-                <Animated.View style={block(styles.skelCard)} />
-                {[0, 1, 2].map((i) => (
+                <Animated.View style={block(styles.skelHero)} />
+                <Animated.View style={block(styles.skelBlock)} />
+                <Animated.View style={block(styles.skelBlock)} />
+                {[0, 1].map((i) => (
                     <Animated.View key={i} style={block(styles.skelRow)} />
                 ))}
             </View>
         </SafeAreaView>
     );
 }
+
+/** Строка макроса: подпись слева, тонкий бар по центру, «96 / 140 г» справа. */
+function MacroRow({
+    label,
+    eaten,
+    goal,
+    color,
+    theme,
+}: {
+    label: string;
+    eaten: number;
+    goal: number | null;
+    color: string;
+    theme: (typeof Colors)["light"] | (typeof Colors)["dark"];
+}) {
+    const pct = goal ? Math.min(eaten / goal, 1) : 0;
+    const over = goal != null && eaten > goal;
+    return (
+        <View
+            style={macroStyles.row}
+            accessible
+            accessibilityLabel={`${label}: ${Math.round(eaten)}${
+                goal != null ? ` из ${Math.round(goal)}` : ""
+            } г`}
+        >
+            <Text style={[macroStyles.label, { color: theme.inkSecondary }]}>
+                {label}
+            </Text>
+            <View
+                style={[macroStyles.track, { backgroundColor: theme.hairline }]}
+            >
+                <View
+                    style={[
+                        macroStyles.fill,
+                        {
+                            backgroundColor: color,
+                            width: `${Math.max(pct * 100, 2)}%`,
+                        },
+                    ]}
+                />
+            </View>
+            <Text
+                style={[
+                    macroStyles.value,
+                    TabularNums,
+                    { color: over ? theme.danger : theme.ink },
+                ]}
+            >
+                {Math.round(eaten)}
+                {goal != null && ` / ${Math.round(goal)}`} г
+            </Text>
+        </View>
+    );
+}
+
+const macroStyles = StyleSheet.create({
+    row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
+    label: { width: 64, fontFamily: Fonts.sansMedium, fontSize: 13 },
+    track: { flex: 1, height: 6, borderRadius: 3, overflow: "hidden" },
+    fill: { height: 6, borderRadius: 3 },
+    value: { fontFamily: Fonts.sansSemiBold, fontSize: 13 },
+});
 
 export default function DashboardScreen() {
     const scheme = useColorScheme();
@@ -256,9 +314,8 @@ export default function DashboardScreen() {
         }
     }, []);
 
-    // Полоса недели: 6 прошлых дней тянутся отдельными запросами; последний
-    // залп побеждает (weekSeq отсекает устаревшие ответы). Прошлые дни меняются
-    // только правками из редакторов, поэтому на фокус экрана не перезагружаем.
+    // 6 прошлых дней — отдельными запросами, weekSeq отсекает устаревший залп;
+    // прошлое меняют только редакторы, на фокус не перезагружаем
     const weekLoadedFor = useRef<string | null>(null);
     const weekSeq = useRef(0);
     const loadWeek = useCallback(async (today: string) => {
@@ -511,6 +568,20 @@ export default function DashboardScreen() {
     const kcalEaten = data.calories.eaten;
     const kcalOver = kcalGoal != null && kcalEaten > kcalGoal;
     const kcalLeft = kcalGoal != null ? kcalGoal - kcalEaten : null;
+    const kcalPct = kcalGoal ? Math.min(kcalEaten / kcalGoal, 1) : 0;
+    // Герой: остаток / перебор / просто съедено (когда цели нет)
+    const heroEyebrow = kcalOver
+        ? "ПЕРЕБОР"
+        : kcalGoal == null
+          ? "СЪЕДЕНО"
+          : isToday
+            ? "ОСТАЛОСЬ СЕГОДНЯ"
+            : "ОСТАЛОСЬ";
+    const heroValue = kcalGoal == null ? kcalEaten : Math.abs(kcalLeft ?? 0);
+    const heroSub =
+        kcalGoal != null
+            ? `${kcalEaten.toLocaleString("ru-RU")} из ${kcalGoal.toLocaleString("ru-RU")} ккал`
+            : "ккал за сегодня";
     const waterPct = data.water.goal_ml
         ? Math.min(data.water.total_ml / data.water.goal_ml, 1)
         : 0;
@@ -753,79 +824,113 @@ export default function DashboardScreen() {
                         )}
                     </FadeIn>
 
-                    {/* Hero: calorie arc + macro rings */}
+                    {/* Hero: остаток калорий гигантской цифрой прямо на surface */}
                     <FadeIn delay={120}>
                         <View
-                            style={[
-                                styles.card,
-                                styles.heroCard,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
-                            ]}
+                            style={styles.hero}
+                            accessible
+                            accessibilityLabel={`Калории: съедено ${kcalEaten}${
+                                kcalGoal != null ? ` из ${kcalGoal}` : ""
+                            } ккал`}
                         >
-                            <CalorieArc
-                                eaten={kcalEaten}
-                                goal={kcalGoal}
-                                theme={theme}
-                                width={Math.min(contentW, 300)}
-                            />
-                            {kcalLeft != null && (
-                                <Text
+                            <Text
+                                style={[
+                                    styles.heroEyebrow,
+                                    {
+                                        color: kcalOver
+                                            ? theme.danger
+                                            : theme.inkMuted,
+                                    },
+                                ]}
+                            >
+                                {heroEyebrow}
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.heroNumber,
+                                    TabularNums,
+                                    {
+                                        color: kcalOver
+                                            ? theme.danger
+                                            : theme.accent,
+                                    },
+                                ]}
+                            >
+                                {heroValue.toLocaleString("ru-RU")}
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.heroSub,
+                                    TabularNums,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                {heroSub}
+                            </Text>
+                            {kcalGoal != null && (
+                                <View
                                     style={[
-                                        styles.heroHint,
-                                        TabularNums,
+                                        styles.heroTrack,
                                         {
-                                            color: kcalOver
-                                                ? theme.danger
-                                                : theme.inkMuted,
+                                            backgroundColor:
+                                                theme.surfaceElevated,
                                         },
                                     ]}
                                 >
-                                    {kcalOver
-                                        ? `Перебор на ${Math.abs(kcalLeft).toLocaleString("ru-RU")} ккал`
-                                        : `Осталось ${kcalLeft.toLocaleString("ru-RU")} ккал`}
-                                </Text>
+                                    <View
+                                        style={[
+                                            styles.heroFill,
+                                            {
+                                                backgroundColor: kcalOver
+                                                    ? theme.danger
+                                                    : theme.accent,
+                                                width: `${Math.max(kcalPct * 100, 2)}%`,
+                                            },
+                                        ]}
+                                    />
+                                </View>
                             )}
-                            <View style={styles.ringsRow}>
-                                <MacroRing
-                                    label="Белки"
-                                    eaten={data.macros.protein.eaten}
-                                    goal={data.macros.protein.goal}
-                                    unit="г"
-                                    color={theme.protein}
-                                    theme={theme}
-                                />
-                                <MacroRing
-                                    label="Углеводы"
-                                    eaten={data.macros.carbs.eaten}
-                                    goal={data.macros.carbs.goal}
-                                    unit="г"
-                                    color={theme.carbs}
-                                    theme={theme}
-                                />
-                                <MacroRing
-                                    label="Жиры"
-                                    eaten={data.macros.fat.eaten}
-                                    goal={data.macros.fat.goal}
-                                    unit="г"
-                                    color={theme.fat}
-                                    theme={theme}
-                                />
-                            </View>
+                        </View>
+                    </FadeIn>
+
+                    {/* Макросы: три строки-бара на приподнятом блоке */}
+                    <FadeIn delay={180}>
+                        <View
+                            style={[
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
+                            <MacroRow
+                                label="Белки"
+                                eaten={data.macros.protein.eaten}
+                                goal={data.macros.protein.goal}
+                                color={theme.protein}
+                                theme={theme}
+                            />
+                            <MacroRow
+                                label="Углеводы"
+                                eaten={data.macros.carbs.eaten}
+                                goal={data.macros.carbs.goal}
+                                color={theme.carbs}
+                                theme={theme}
+                            />
+                            <MacroRow
+                                label="Жиры"
+                                eaten={data.macros.fat.eaten}
+                                goal={data.macros.fat.goal}
+                                color={theme.fat}
+                                theme={theme}
+                            />
                         </View>
                     </FadeIn>
 
                     {/* Water */}
-                    <FadeIn delay={180}>
+                    <FadeIn delay={240}>
                         <View
                             style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             <View style={styles.cardHeader}>
@@ -984,14 +1089,11 @@ export default function DashboardScreen() {
                     </FadeIn>
 
                     {/* Weight */}
-                    <FadeIn delay={240}>
+                    <FadeIn delay={300}>
                         <View
                             style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             <View style={styles.cardHeader}>
@@ -1117,7 +1219,7 @@ export default function DashboardScreen() {
                     </FadeIn>
 
                     {/* Meals */}
-                    <FadeIn delay={300}>
+                    <FadeIn delay={360}>
                         <View style={styles.titleRow}>
                             <Text style={[styles.h2, { color: theme.ink }]}>
                                 Еда
@@ -1146,12 +1248,9 @@ export default function DashboardScreen() {
                         </View>
                         <View
                             style={[
-                                styles.card,
+                                styles.block,
                                 styles.mealsCard,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             {data.meals.length === 0 &&
@@ -1392,9 +1491,9 @@ const styles = StyleSheet.create({
         padding: Spacing.lg,
     },
     retryTitle: {
-        fontFamily: Fonts.display,
-        fontSize: 30,
-        lineHeight: 40,
+        fontFamily: Fonts.displayHero,
+        fontSize: 44,
+        lineHeight: 48,
         textAlign: "center",
     },
     retryHint: {
@@ -1403,12 +1502,12 @@ const styles = StyleSheet.create({
         textAlign: "center",
     },
     retryBtn: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.xl,
-        paddingVertical: 14,
+        paddingVertical: 16,
         marginTop: Spacing.sm,
     },
-    retryText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    retryText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
     skeletonWrap: {
         flex: 1,
         padding: Spacing.lg,
@@ -1416,9 +1515,10 @@ const styles = StyleSheet.create({
     },
     skelLine: { width: 140, height: 14, borderRadius: 7 },
     skelTitle: { width: 220, height: 34, borderRadius: 8 },
-    skelStrip: { height: 52, borderRadius: Radii.md },
-    skelCard: { height: 300, borderRadius: Radii.lg },
-    skelRow: { height: 64, borderRadius: Radii.md },
+    skelStrip: { height: 52, borderRadius: Radii.xl },
+    skelHero: { width: 240, height: 72, borderRadius: 12 },
+    skelBlock: { height: 120, borderRadius: Radii.xl },
+    skelRow: { height: 64, borderRadius: Radii.xl },
     scroll: { paddingBottom: Spacing.xxl * 2 },
     wrap: {
         width: "100%",
@@ -1450,7 +1550,7 @@ const styles = StyleSheet.create({
         gap: Spacing.sm,
     },
     streakBadge: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: 12,
         paddingVertical: 6,
     },
@@ -1470,7 +1570,7 @@ const styles = StyleSheet.create({
     },
     backToday: {
         alignSelf: "flex-start",
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 8,
         marginTop: Spacing.sm,
@@ -1489,17 +1589,34 @@ const styles = StyleSheet.create({
         lineHeight: 28,
         marginTop: Spacing.sm,
     },
-    card: {
-        borderWidth: 1,
-        borderRadius: Radii.lg,
-        padding: Spacing.md,
-        gap: Spacing.sm,
+    block: {
+        borderRadius: Radii.xl,
+        padding: Spacing.lg,
+        gap: Spacing.md,
     },
-    heroCard: {
-        alignItems: "center",
-        paddingTop: Spacing.lg,
+    hero: {
+        paddingTop: Spacing.sm,
+        paddingBottom: Spacing.xs,
+        gap: Spacing.xs,
     },
-    heroHint: { fontFamily: Fonts.sansMedium, fontSize: 13 },
+    heroEyebrow: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 11,
+        letterSpacing: 3,
+    },
+    heroNumber: {
+        fontFamily: Fonts.displayHero,
+        fontSize: 68,
+        lineHeight: 74,
+    },
+    heroSub: { fontFamily: Fonts.sansMedium, fontSize: 14 },
+    heroTrack: {
+        height: 7,
+        borderRadius: Radii.pill,
+        overflow: "hidden",
+        marginTop: Spacing.sm,
+    },
+    heroFill: { height: 7, borderRadius: Radii.pill },
     cardHeader: {
         flexDirection: "row",
         justifyContent: "space-between",
@@ -1512,25 +1629,19 @@ const styles = StyleSheet.create({
         letterSpacing: 2,
     },
     cardValue: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
-    ringsRow: {
-        flexDirection: "row",
-        justifyContent: "space-around",
-        alignSelf: "stretch",
-        paddingTop: Spacing.md,
-    },
     chipRow: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: Spacing.sm,
     },
     chip: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 10,
     },
     chipGhost: {
         borderWidth: 1,
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 9,
     },
@@ -1553,20 +1664,20 @@ const styles = StyleSheet.create({
     },
     mealDesc: { fontFamily: Fonts.sans, fontSize: 15, lineHeight: 20 },
     mealMacros: { fontFamily: Fonts.sans, fontSize: 12 },
-    mealKcal: { fontFamily: Fonts.display, fontSize: 15 },
+    mealKcal: { fontFamily: Fonts.displayBold, fontSize: 17 },
     repeatBtn: { paddingLeft: 2 },
     repeatIcon: { fontSize: 17, lineHeight: 20 },
     fab: {
         position: "absolute",
         bottom: Spacing.lg,
         alignSelf: "center",
-        borderRadius: Radii.xl,
-        paddingHorizontal: Spacing.lg,
-        paddingVertical: 15,
-        shadowOpacity: 0.45,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 8,
+        borderRadius: Radii.pill,
+        paddingHorizontal: Spacing.xl,
+        paddingVertical: 16,
+        shadowOpacity: 0.5,
+        shadowRadius: 20,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 10,
     },
-    fabText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    fabText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
 });

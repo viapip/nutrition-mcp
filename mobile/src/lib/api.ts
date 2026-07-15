@@ -2,11 +2,7 @@ import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { fetch as expoFetch } from "expo/fetch";
 
-/**
- * API client for the nutrition-mcp server (/api/login, /api/signup,
- * /api/dashboard, /api/chat, and the manual-edit CRUD). EXPO_PUBLIC_API_URL
- * unset = mock mode with fixture data so the app runs standalone.
- */
+/** Клиент API сервера. EXPO_PUBLIC_API_URL не задан = mock-режим с фикстурами. */
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 const MOCK = API_URL === "";
 
@@ -152,9 +148,8 @@ export interface ChatReply {
     proposals: MealFields[];
 }
 
-/** Clear the stored token on 401, but only if it's still the one we sent —
- * otherwise a late 401 from an old parallel request would wipe a token the
- * user just re-obtained by logging back in. */
+/** Сброс токена по 401 — только если он всё ещё тот, что отправляли:
+ * поздний 401 старого запроса не должен стереть свежий логин. */
 async function clearIfStale(sentToken: string | null): Promise<void> {
     if (sentToken && (await getToken()) === sentToken) await setToken(null);
 }
@@ -177,10 +172,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return res.json() as Promise<T>;
 }
 
-/** Device IANA zone (e.g. "Europe/Moscow"); the server stores it so days,
- * streaks and water buckets aren't computed in UTC. Returns undefined for
- * "UTC" (real or Hermes' no-ICU fallback) — the server default is already
- * UTC, so we never overwrite a good stored zone with a bogus fallback. */
+/** IANA-зона устройства. "UTC" (реальный или Hermes без ICU) → undefined,
+ * чтобы не затирать нормальную сохранённую зону фолбэком. */
 function deviceTimezone(): string | undefined {
     try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -267,11 +260,7 @@ export async function getStats(days = 30): Promise<StatsData> {
     return request<StatsData>(`/api/summary?days=${days}`);
 }
 
-/**
- * Chat turn over SSE: `onTool` fires as the assistant runs each tool, so the
- * UI can narrate progress. `expo/fetch` is WinterCG-compliant and streams on
- * native; on web it's the regular fetch.
- */
+/** Ход чата по SSE: onTool — прогресс инструментов; expo/fetch стримит на нативе. */
 export async function sendChat(
     messages: ChatMessage[],
     onTool?: (name: string) => void,
@@ -376,9 +365,8 @@ export async function saveLlmKey(key: string | null): Promise<Settings> {
 
 // ----- manual editing -----
 
-/** A key stable across retries of the same action, so the server dedupes a
- * re-sent write instead of double-inserting. Call from an event handler /
- * effect (uses Date.now) — never in a component's render body. */
+/** Стабильный ключ ретрая — сервер дедупит повторную запись. Только из
+ * хендлеров/эффектов (Date.now), не в рендере. */
 export function newIdempotencyKey(): string {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

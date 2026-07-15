@@ -26,13 +26,9 @@ import { isPlausibleWeightGrams } from "./units.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { todayInTz, shiftLocalDate } from "./tz.js";
 
-/**
- * Chat endpoint for the mobile app: an OpenAI-compatible chat-completions
- * provider (Kimi by default) with tool-use over the same data layer the MCP
- * tools wrap. The provider is just three env vars — swap LLM_BASE_URL /
- * LLM_MODEL / LLM_API_KEY and any compatible provider (Moonshot, DeepSeek,
- * OpenRouter, OpenAI) works unchanged.
- */
+/** Чат мобильного приложения: OpenAI-совместимый провайдер (Kimi по умолчанию)
+ * с tool-use над тем же слоем данных, что и MCP. Провайдер = три env-переменных
+ * (LLM_BASE_URL / LLM_MODEL / LLM_API_KEY). */
 
 const LLM_BASE_URL = () =>
     process.env.LLM_BASE_URL ?? "https://api.moonshot.ai/v1";
@@ -365,9 +361,8 @@ async function daySnapshot(userId: string, date?: string) {
     return buildDashboard(day, tz, meals, water, weights, latest, goals);
 }
 
-/** Executes one tool call; errors come back as a JSON payload the model can react to.
- * `idem` (when the caller threads a turn key) makes the write tools retry-safe:
- * a re-sent chat turn reuses the same key, so the row lands once. */
+/** Один tool call; ошибки уходят модели JSON-пейлоадом. idem делает
+ * пишущие инструменты retry-safe (повторный ход = тот же ключ). */
 export async function executeTool(
     userId: string,
     name: string,
@@ -568,11 +563,9 @@ async function callLlm(
     return msg;
 }
 
-// Reply text that CLAIMS a meal card exists / asks the user to confirm — the
-// past-tense surface forms the model produces when mimicking its own history
-// ("Предложила: …", "Подтвердите для сохранения"). Deliberately excludes the
-// infinitive ("могу предложить…" is an innocent suggestion, not a claim). A
-// residual false positive only costs one extra LLM round with a nudge.
+// Текст, УТВЕРЖДАЮЩИЙ существование карточки («Предложила: …», «Подтвердите»).
+// Прошедшее время намеренно: «могу предложить…» — невинное предложение, не клейм.
+// Ложное срабатывание стоит один лишний раунд LLM с nudge.
 const CLAIMS_PROPOSAL =
     /предложил|предложен|подтверд|карточк|proposed|confirm/i;
 
@@ -623,11 +616,8 @@ export async function runChatTurn(
             const msg = await callLlm(messages, apiKey, signal);
             if (!msg.tool_calls?.length) {
                 const text = msg.content ?? "";
-                // Guard against prose-mimicry: the model copies its earlier
-                // "Предложила: …" replies from history without actually calling
-                // propose_meal, so no card appears and the meal is lost. If the
-                // reply claims a proposal/confirmation but this turn produced
-                // neither a card nor a write, bounce it back once.
+                // Анти-мимикрия: ответ клеймит карточку, а ход не дал ни
+                // карточки, ни записи — возвращаем модели один раз
                 if (
                     !nudged &&
                     !proposals.length &&
@@ -657,13 +647,9 @@ export async function runChatTurn(
                     // leave args empty; executeTool reports the validation error
                 }
                 onTool?.(call.function.name);
-                // Stable per (turn, position, args): a re-sent turn reproduces
-                // the same key, so log_* writes dedupe on retry. Args are
-                // canonicalised (keys sorted) so a reformat between retries
-                // still matches.
-                // ponytail: keyed on call position; a model that reorders
-                // identical calls across a retry could still double-log — rare
-                // enough to accept over losing two genuinely-identical entries.
+                // Ключ = (turn, позиция, канонизированные args) → log_* дедупятся
+                // на ретрае. ponytail: перестановка одинаковых вызовов между
+                // ретраями может задвоить — принимаем, редкость
                 const seq = toolSeq++;
                 const canonicalArgs = JSON.stringify(
                     args,

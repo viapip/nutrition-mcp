@@ -291,9 +291,11 @@ export default function StatsScreen() {
                     { backgroundColor: theme.surface },
                 ]}
             >
+                <Text style={[styles.retryEyebrow, { color: theme.inkMuted }]}>
+                    ИТОГИ
+                </Text>
                 <Text style={[styles.retryTitle, { color: theme.ink }]}>
-                    Цифры{"\n"}
-                    <Text style={{ color: theme.accent }}>не пришли</Text>
+                    Цифры не пришли
                 </Text>
                 <Text style={[styles.retryHint, { color: theme.inkMuted }]}>
                     Проверь соединение — статистика никуда не делась.
@@ -369,55 +371,52 @@ export default function StatsScreen() {
                 }
             >
                 <View style={styles.wrap}>
-                    {/* Header */}
+                    {/* Top bar */}
                     <FadeIn delay={0}>
-                        <View style={styles.titleBlock}>
-                            <View style={styles.eyebrowRow}>
+                        <View style={styles.topBar}>
+                            <Text
+                                style={[
+                                    styles.eyebrow,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                ИТОГИ · 30 ДНЕЙ
+                            </Text>
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Закрыть итоги"
+                                onPress={() => router.back()}
+                                hitSlop={8}
+                                style={({ pressed }) => ({
+                                    transform: [{ scale: pressed ? 0.96 : 1 }],
+                                })}
+                            >
                                 <Text
                                     style={[
-                                        styles.eyebrow,
-                                        { color: theme.inkMuted },
+                                        styles.closeAction,
+                                        { color: theme.inkSecondary },
                                     ]}
                                 >
-                                    ПОСЛЕДНИЕ 30 ДНЕЙ
+                                    Закрыть
                                 </Text>
-                                <Pressable
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Закрыть итоги"
-                                    onPress={() => router.back()}
-                                    hitSlop={8}
-                                >
-                                    <Text
-                                        style={[
-                                            styles.headerAction,
-                                            { color: theme.accent },
-                                        ]}
-                                    >
-                                        Закрыть
-                                    </Text>
-                                </Pressable>
-                            </View>
-                            <Text style={[styles.h1, { color: theme.ink }]}>
-                                Итоги
-                            </Text>
+                            </Pressable>
                         </View>
                     </FadeIn>
 
                     {/* Streak hero */}
                     <FadeIn delay={60}>
-                        <View
-                            style={[
-                                styles.card,
-                                styles.streakCard,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
-                            ]}
-                        >
+                        <View style={styles.hero}>
                             <Text
                                 style={[
-                                    styles.streakValue,
+                                    styles.eyebrow,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                СТРИК
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.heroValue,
                                     TabularNums,
                                     streakLit
                                         ? {
@@ -427,7 +426,7 @@ export default function StatsScreen() {
                                                   width: 0,
                                                   height: 0,
                                               },
-                                              textShadowRadius: 18,
+                                              textShadowRadius: 22,
                                           }
                                         : { color: theme.inkMuted },
                                 ]}
@@ -436,7 +435,7 @@ export default function StatsScreen() {
                             </Text>
                             <Text
                                 style={[
-                                    styles.streakCaption,
+                                    styles.heroCaption,
                                     { color: theme.inkSecondary },
                                 ]}
                             >
@@ -447,7 +446,7 @@ export default function StatsScreen() {
                             {!streakLit && (
                                 <Text
                                     style={[
-                                        styles.streakHint,
+                                        styles.heroHint,
                                         { color: theme.inkMuted },
                                     ]}
                                 >
@@ -462,7 +461,8 @@ export default function StatsScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    рекорд {stats.streak.best}
+                                    лучший — {stats.streak.best}{" "}
+                                    {pluralDays(stats.streak.best)}
                                 </Text>
                             )}
                         </View>
@@ -472,17 +472,14 @@ export default function StatsScreen() {
                     <FadeIn delay={120}>
                         <View
                             style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             <Text
                                 style={[
-                                    styles.cardLabel,
-                                    { color: theme.inkSecondary },
+                                    styles.eyebrow,
+                                    { color: theme.inkMuted },
                                 ]}
                             >
                                 КАЛОРИИ
@@ -493,16 +490,62 @@ export default function StatsScreen() {
                                 theme={theme}
                                 width={contentW}
                             />
-                            <Text
-                                style={[
-                                    styles.footnote,
-                                    TabularNums,
-                                    { color: theme.inkMuted },
-                                ]}
-                            >
-                                В среднем {avg30.toLocaleString("ru-RU")} ккал ·
-                                за неделю {avg7.toLocaleString("ru-RU")}
-                            </Text>
+                            <View style={styles.statRow}>
+                                <View style={styles.statCell}>
+                                    <Text
+                                        style={[
+                                            styles.eyebrow,
+                                            { color: theme.inkMuted },
+                                        ]}
+                                    >
+                                        СРЕДНЕЕ · 30
+                                    </Text>
+                                    <Text
+                                        style={[
+                                            styles.statValue,
+                                            TabularNums,
+                                            { color: theme.ink },
+                                        ]}
+                                    >
+                                        {avg30.toLocaleString("ru-RU")}
+                                        <Text
+                                            style={[
+                                                styles.statUnit,
+                                                { color: theme.inkMuted },
+                                            ]}
+                                        >
+                                            {" ккал"}
+                                        </Text>
+                                    </Text>
+                                </View>
+                                <View style={styles.statCell}>
+                                    <Text
+                                        style={[
+                                            styles.eyebrow,
+                                            { color: theme.inkMuted },
+                                        ]}
+                                    >
+                                        ЗА НЕДЕЛЮ
+                                    </Text>
+                                    <Text
+                                        style={[
+                                            styles.statValue,
+                                            TabularNums,
+                                            { color: theme.ink },
+                                        ]}
+                                    >
+                                        {avg7.toLocaleString("ru-RU")}
+                                        <Text
+                                            style={[
+                                                styles.statUnit,
+                                                { color: theme.inkMuted },
+                                            ]}
+                                        >
+                                            {" ккал"}
+                                        </Text>
+                                    </Text>
+                                </View>
+                            </View>
                         </View>
                     </FadeIn>
 
@@ -510,21 +553,18 @@ export default function StatsScreen() {
                     <FadeIn delay={180}>
                         <View
                             style={[
-                                styles.card,
-                                styles.macrosCard,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                styles.macrosBlock,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
                             <Text
                                 style={[
-                                    styles.cardLabel,
-                                    { color: theme.inkSecondary },
+                                    styles.eyebrow,
+                                    { color: theme.inkMuted },
                                 ]}
                             >
-                                БЕЛКИ · УГЛЕВОДЫ · ЖИРЫ — НЕДЕЛЯ
+                                МАКРОСЫ · НЕДЕЛЯ
                             </Text>
                             <MacroBar
                                 label="Белки"
@@ -554,25 +594,22 @@ export default function StatsScreen() {
                     <FadeIn delay={240}>
                         <View
                             style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
-                            <View style={styles.cardHeader}>
+                            <View style={styles.blockHeader}>
                                 <Text
                                     style={[
-                                        styles.cardLabel,
-                                        { color: theme.inkSecondary },
+                                        styles.eyebrow,
+                                        { color: theme.inkMuted },
                                     ]}
                                 >
-                                    ВОДА — НЕДЕЛЯ
+                                    ВОДА · НЕДЕЛЯ
                                 </Text>
                                 <Text
                                     style={[
-                                        styles.cardValue,
+                                        styles.headVal,
                                         TabularNums,
                                         { color: theme.water },
                                     ]}
@@ -580,7 +617,7 @@ export default function StatsScreen() {
                                     {litreText(avgWater7)}
                                     {waterGoal != null &&
                                         ` / ${litreText(waterGoal)}`}{" "}
-                                    л в день
+                                    л
                                 </Text>
                             </View>
                             {waterGoal != null && (
@@ -620,18 +657,15 @@ export default function StatsScreen() {
                     <FadeIn delay={300}>
                         <View
                             style={[
-                                styles.card,
-                                {
-                                    backgroundColor: theme.surfaceElevated,
-                                    borderColor: theme.hairline,
-                                },
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
                             ]}
                         >
-                            <View style={styles.cardHeader}>
+                            <View style={styles.blockHeader}>
                                 <Text
                                     style={[
-                                        styles.cardLabel,
-                                        { color: theme.inkSecondary },
+                                        styles.eyebrow,
+                                        { color: theme.inkMuted },
                                     ]}
                                 >
                                     ВЕС
@@ -639,12 +673,20 @@ export default function StatsScreen() {
                                 {lastW != null && (
                                     <Text
                                         style={[
-                                            styles.cardValue,
+                                            styles.headValBig,
                                             TabularNums,
                                             { color: theme.ink },
                                         ]}
                                     >
-                                        {kgText(lastW.weight_g)} кг
+                                        {kgText(lastW.weight_g)}
+                                        <Text
+                                            style={[
+                                                styles.statUnit,
+                                                { color: theme.inkMuted },
+                                            ]}
+                                        >
+                                            {" кг"}
+                                        </Text>
                                     </Text>
                                 )}
                             </View>
@@ -652,7 +694,7 @@ export default function StatsScreen() {
                                 <WeightSparkline
                                     series={weightSeries}
                                     targetG={stats.weight.target_g}
-                                    color={theme.accent}
+                                    color={theme.ink}
                                     theme={theme}
                                     width={contentW}
                                 />
@@ -693,19 +735,22 @@ export default function StatsScreen() {
                     {/* Frequent meals */}
                     {stats.frequent.length > 0 && (
                         <FadeIn delay={360}>
-                            <Text style={[styles.h2, { color: theme.ink }]}>
-                                Часто ешь
-                            </Text>
                             <View
                                 style={[
-                                    styles.card,
-                                    styles.frequentCard,
-                                    {
-                                        backgroundColor: theme.surfaceElevated,
-                                        borderColor: theme.hairline,
-                                    },
+                                    styles.block,
+                                    styles.freqBlock,
+                                    { backgroundColor: theme.surfaceElevated },
                                 ]}
                             >
+                                <Text
+                                    style={[
+                                        styles.eyebrow,
+                                        styles.freqEyebrow,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    ЧАСТО ЕШЬ
+                                </Text>
                                 {stats.frequent.map((item, i) => (
                                     <View
                                         key={`${item.description}-${i}`}
@@ -735,18 +780,43 @@ export default function StatsScreen() {
                                                 ]}
                                             >
                                                 ×{item.count}
-                                                {item.calories != null &&
-                                                    ` · ${item.calories.toLocaleString("ru-RU")} ккал`}
                                             </Text>
                                         </View>
+                                        {item.calories != null && (
+                                            <View style={styles.freqKcalCell}>
+                                                <Text
+                                                    style={[
+                                                        styles.freqKcal,
+                                                        TabularNums,
+                                                        { color: theme.ink },
+                                                    ]}
+                                                >
+                                                    {item.calories.toLocaleString(
+                                                        "ru-RU",
+                                                    )}
+                                                </Text>
+                                                <Text
+                                                    style={[
+                                                        styles.freqKcalUnit,
+                                                        {
+                                                            color: theme.inkMuted,
+                                                        },
+                                                    ]}
+                                                >
+                                                    ккал
+                                                </Text>
+                                            </View>
+                                        )}
                                         {added[i] ? (
                                             <Text
                                                 style={[
                                                     styles.freqAdded,
-                                                    { color: theme.accent },
+                                                    {
+                                                        color: theme.inkSecondary,
+                                                    },
                                                 ]}
                                             >
-                                                Добавлено
+                                                Готово
                                             </Text>
                                         ) : (
                                             <Pressable
@@ -756,13 +826,26 @@ export default function StatsScreen() {
                                                     void repeatMeal(item, i)
                                                 }
                                                 hitSlop={10}
-                                                style={styles.repeatBtn}
+                                                style={({ pressed }) => [
+                                                    styles.repeatBtn,
+                                                    {
+                                                        backgroundColor:
+                                                            theme.surface,
+                                                        transform: [
+                                                            {
+                                                                scale: pressed
+                                                                    ? 0.94
+                                                                    : 1,
+                                                            },
+                                                        ],
+                                                    },
+                                                ]}
                                             >
                                                 <Text
                                                     style={[
                                                         styles.repeatIcon,
                                                         {
-                                                            color: theme.inkMuted,
+                                                            color: theme.inkSecondary,
                                                         },
                                                     ]}
                                                 >
@@ -800,10 +883,15 @@ const styles = StyleSheet.create({
         gap: Spacing.md,
         padding: Spacing.lg,
     },
+    retryEyebrow: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 11,
+        letterSpacing: 3,
+    },
     retryTitle: {
         fontFamily: Fonts.display,
-        fontSize: 30,
-        lineHeight: 40,
+        fontSize: 28,
+        lineHeight: 36,
         textAlign: "center",
     },
     retryHint: {
@@ -812,12 +900,12 @@ const styles = StyleSheet.create({
         textAlign: "center",
     },
     retryBtn: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.xl,
-        paddingVertical: 14,
+        paddingVertical: 16,
         marginTop: Spacing.sm,
     },
-    retryText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    retryText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
     skeletonWrap: {
         flex: 1,
         padding: Spacing.lg,
@@ -836,8 +924,7 @@ const styles = StyleSheet.create({
         paddingTop: Spacing.md,
         gap: Spacing.md,
     },
-    titleBlock: { gap: Spacing.xs },
-    eyebrowRow: {
+    topBar: {
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "center",
@@ -845,59 +932,60 @@ const styles = StyleSheet.create({
     eyebrow: {
         fontFamily: Fonts.sansSemiBold,
         fontSize: 11,
-        letterSpacing: 3,
+        letterSpacing: 2.5,
     },
-    headerAction: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
-    h1: {
-        fontFamily: Fonts.display,
-        fontSize: 32,
-        lineHeight: 42,
-    },
-    h2: {
-        fontFamily: Fonts.display,
-        fontSize: 20,
-        lineHeight: 28,
-        marginTop: Spacing.sm,
-        marginBottom: Spacing.sm,
-    },
-    card: {
-        borderWidth: 1,
-        borderRadius: Radii.lg,
-        padding: Spacing.md,
-        gap: Spacing.sm,
-    },
-    streakCard: {
-        alignItems: "center",
-        paddingVertical: Spacing.lg,
+    closeAction: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    hero: {
+        paddingTop: Spacing.sm,
+        paddingBottom: Spacing.md,
         gap: Spacing.xs,
     },
-    streakValue: {
-        fontFamily: Fonts.displayBold,
-        fontSize: 42,
-        lineHeight: 52,
-    },
-    streakCaption: { fontFamily: Fonts.sansMedium, fontSize: 14 },
-    streakHint: {
-        fontFamily: Fonts.sans,
-        fontSize: 13,
-        textAlign: "center",
+    heroValue: {
+        fontFamily: Fonts.displayHero,
+        fontSize: 68,
+        lineHeight: 72,
         marginTop: Spacing.xs,
     },
-    macrosCard: { gap: Spacing.md },
-    cardHeader: {
+    heroCaption: { fontFamily: Fonts.sansMedium, fontSize: 15 },
+    heroHint: {
+        fontFamily: Fonts.sans,
+        fontSize: 13,
+        marginTop: Spacing.xs,
+    },
+    footnote: { fontFamily: Fonts.sans, fontSize: 12, lineHeight: 17 },
+    block: {
+        borderRadius: Radii.lg,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: Spacing.lg,
+        gap: Spacing.sm,
+    },
+    macrosBlock: { gap: Spacing.md },
+    blockHeader: {
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "baseline",
         alignSelf: "stretch",
     },
-    cardLabel: {
-        fontFamily: Fonts.sansSemiBold,
-        fontSize: 11,
-        letterSpacing: 2,
+    headVal: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    headValBig: {
+        fontFamily: Fonts.displayBold,
+        fontSize: 18,
+        lineHeight: 24,
     },
-    cardValue: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
-    footnote: { fontFamily: Fonts.sans, fontSize: 12 },
-    frequentCard: { gap: 0 },
+    statRow: {
+        flexDirection: "row",
+        gap: Spacing.xl,
+        marginTop: Spacing.xs,
+    },
+    statCell: { gap: 4 },
+    statValue: {
+        fontFamily: Fonts.displayBold,
+        fontSize: 22,
+        lineHeight: 28,
+    },
+    statUnit: { fontFamily: Fonts.sans, fontSize: 12 },
+    freqBlock: { gap: 0, paddingVertical: Spacing.xs },
+    freqEyebrow: { paddingTop: Spacing.md, paddingBottom: Spacing.xs },
     freqRow: {
         flexDirection: "row",
         alignItems: "center",
@@ -905,10 +993,23 @@ const styles = StyleSheet.create({
         paddingVertical: Spacing.md,
     },
     freqText: { flex: 1, gap: 3 },
-    freqDesc: { fontFamily: Fonts.sans, fontSize: 15, lineHeight: 20 },
+    freqDesc: { fontFamily: Fonts.sansMedium, fontSize: 15, lineHeight: 20 },
     freqMeta: { fontFamily: Fonts.sans, fontSize: 12 },
+    freqKcalCell: { alignItems: "flex-end" },
+    freqKcal: { fontFamily: Fonts.displayBold, fontSize: 16, lineHeight: 20 },
+    freqKcalUnit: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 9,
+        letterSpacing: 1.5,
+    },
     freqAdded: { fontFamily: Fonts.sansSemiBold, fontSize: 13 },
     freqNote: { paddingVertical: Spacing.sm },
-    repeatBtn: { paddingLeft: 2 },
-    repeatIcon: { fontSize: 17, lineHeight: 20 },
+    repeatBtn: {
+        width: 38,
+        height: 38,
+        borderRadius: Radii.pill,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    repeatIcon: { fontFamily: Fonts.sans, fontSize: 17, lineHeight: 20 },
 });

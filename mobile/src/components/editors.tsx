@@ -151,7 +151,6 @@ function Sheet({
                         styles.sheet,
                         {
                             backgroundColor: theme.surfaceElevated,
-                            borderColor: theme.hairline,
                             // Keep actions above the Android navigation bar.
                             paddingBottom: Spacing.xl + insets.bottom,
                             transform: [{ translateY: drag }],
@@ -198,6 +197,7 @@ function Field({
     keyboard?: "default" | "decimal-pad";
     placeholder?: string;
 }) {
+    const [focused, setFocused] = useState(false);
     return (
         <View style={styles.field}>
             <Text style={[styles.fieldLabel, { color: theme.inkSecondary }]}>
@@ -208,7 +208,7 @@ function Field({
                     styles.input,
                     {
                         backgroundColor: theme.surface,
-                        borderColor: theme.hairline,
+                        borderColor: focused ? theme.accent : theme.surface,
                         color: theme.ink,
                     },
                 ]}
@@ -219,6 +219,8 @@ function Field({
                 placeholderTextColor={theme.inkMuted}
                 cursorColor={theme.accent}
                 selectionColor={theme.accent}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
             />
         </View>
     );
@@ -237,21 +239,6 @@ function SheetActions({
 }) {
     return (
         <View style={styles.actions}>
-            {onDelete && (
-                <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                        tapBuzz();
-                        confirmDelete("Удалить запись?", onDelete);
-                    }}
-                    disabled={busy}
-                    style={[styles.deleteBtn, { borderColor: theme.danger }]}
-                >
-                    <Text style={[styles.deleteText, { color: theme.danger }]}>
-                        Удалить
-                    </Text>
-                </Pressable>
-            )}
             <Pressable
                 accessibilityRole="button"
                 onPress={() => {
@@ -273,6 +260,21 @@ function SheetActions({
                     {busy ? "Сохраняю…" : "Сохранить"}
                 </Text>
             </Pressable>
+            {onDelete && (
+                <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                        tapBuzz();
+                        confirmDelete("Удалить запись?", onDelete);
+                    }}
+                    disabled={busy}
+                    style={styles.deleteBtn}
+                >
+                    <Text style={[styles.deleteText, { color: theme.danger }]}>
+                        Удалить
+                    </Text>
+                </Pressable>
+            )}
         </View>
     );
 }
@@ -476,11 +478,8 @@ function MealForm({
                                 styles.typeChip,
                                 {
                                     backgroundColor: active
-                                        ? theme.accentSoft
-                                        : theme.surface,
-                                    borderColor: active
                                         ? theme.accent
-                                        : theme.hairline,
+                                        : theme.surface,
                                 },
                             ]}
                         >
@@ -489,7 +488,7 @@ function MealForm({
                                     styles.typeChipText,
                                     {
                                         color: active
-                                            ? theme.accent
+                                            ? theme.onAccent
                                             : theme.inkSecondary,
                                         fontFamily: active
                                             ? Fonts.sansSemiBold
@@ -821,16 +820,15 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: "rgba(18, 13, 7, 0.55)",
+        backgroundColor: "rgba(8, 9, 5, 0.6)",
     },
     sheet: {
         width: "100%",
         maxWidth: MaxContentWidth,
         maxHeight: "88%",
         alignSelf: "center",
-        borderTopLeftRadius: Radii.lg,
-        borderTopRightRadius: Radii.lg,
-        borderWidth: 1,
+        borderTopLeftRadius: 28,
+        borderTopRightRadius: 28,
         padding: Spacing.lg,
         gap: Spacing.md,
     },
@@ -863,17 +861,16 @@ const styles = StyleSheet.create({
     },
     frequentRow: { gap: Spacing.sm },
     frequentChip: {
-        borderRadius: Radii.xl,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
         paddingVertical: 9,
     },
     frequentChipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     typeRow: { flexDirection: "row", gap: Spacing.sm, flexWrap: "wrap" },
     typeChip: {
-        borderWidth: 1,
-        borderRadius: Radii.lg,
+        borderRadius: Radii.pill,
         paddingHorizontal: Spacing.md,
-        paddingVertical: 8,
+        paddingVertical: 9,
     },
     typeChipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     numRow: { flexDirection: "row", gap: Spacing.md },
@@ -881,23 +878,18 @@ const styles = StyleSheet.create({
     hint: { fontFamily: Fonts.sans, fontSize: 12 },
     error: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     actions: {
-        flexDirection: "row",
-        gap: Spacing.md,
+        gap: Spacing.sm,
         marginTop: Spacing.sm,
     },
     deleteBtn: {
-        borderWidth: 1,
-        borderRadius: Radii.xl,
-        paddingVertical: 14,
-        paddingHorizontal: Spacing.lg,
-        alignItems: "center",
+        alignSelf: "center",
+        paddingVertical: Spacing.sm,
     },
-    deleteText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    deleteText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     saveBtn: {
-        flex: 1,
-        borderRadius: Radii.xl,
-        paddingVertical: 14,
+        borderRadius: Radii.pill,
+        paddingVertical: 16,
         alignItems: "center",
     },
-    saveText: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
+    saveText: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
 });

@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 
 /**
- * «Ember» — dark-first: раскалённый янтарь на тёплом угле.
+ * «VOLT» — кислотный лайм на чернильно-чёрном (light: бумага + олива).
  * Дисплей — Unbounded (широкая геометрика, кириллица), текст — Golos Text.
  * Chart hues validated with dataviz six-checks (CVD, chroma, lightness band,
  * contrast) per mode — do not eyeball-adjust protein/carbs/fat/water values.
@@ -9,37 +9,37 @@ import { Platform } from "react-native";
  */
 export const Colors = {
     light: {
-        surface: "#f6efe3",
+        surface: "#f3f5ea",
         surfaceElevated: "#ffffff",
-        ink: "#241d12",
-        inkSecondary: "#5f5747",
-        inkMuted: "#6f6757",
-        hairline: "#e7ddca",
-        accent: "#b04b0b",
+        ink: "#191d10",
+        inkSecondary: "#4b523c",
+        inkMuted: "#5c644a",
+        hairline: "#dde2cd",
+        accent: "#4e6c07",
         onAccent: "#ffffff",
-        // Прозрачная янтарная подложка для чипов/подсветок
-        accentSoft: "rgba(176, 75, 11, 0.10)",
+        // Прозрачная лаймовая подложка для чипов/подсветок
+        accentSoft: "rgba(78, 108, 7, 0.12)",
         protein: "#1f8f56",
         carbs: "#a8730a",
         fat: "#cb3f2e",
         water: "#0c6f9e",
-        danger: "#b3342a",
+        danger: "#a83223",
     },
     dark: {
-        surface: "#16130f",
-        surfaceElevated: "#201c16",
-        ink: "#f2ead9",
-        inkSecondary: "#b3a892",
-        inkMuted: "#a1977f",
-        hairline: "#3a332a",
-        accent: "#ffa64d",
-        onAccent: "#241304",
-        accentSoft: "rgba(255, 166, 77, 0.13)",
+        surface: "#0e100b",
+        surfaceElevated: "#181b13",
+        ink: "#f1f4e8",
+        inkSecondary: "#aab29a",
+        inkMuted: "#939b81",
+        hairline: "#262a1e",
+        accent: "#cff54a",
+        onAccent: "#161a06",
+        accentSoft: "rgba(207, 245, 74, 0.13)",
         protein: "#2fa163",
         carbs: "#bd8a14",
         fat: "#d4553a",
         water: "#2596b3",
-        danger: "#f07868",
+        danger: "#ff8672",
     },
 } as const;
 
@@ -49,6 +49,8 @@ export const Fonts = {
     display: "Unbounded_600SemiBold",
     displayLight: "Unbounded_200ExtraLight",
     displayBold: "Unbounded_700Bold",
+    // Герой-цифры (остаток ккал, стрик) — только для крупных чисел
+    displayHero: "Unbounded_800ExtraBold",
     sans: "GolosText_400Regular",
     sansMedium: "GolosText_500Medium",
     sansSemiBold: "GolosText_600SemiBold",
@@ -68,6 +70,7 @@ export const Radii = {
     md: 16,
     lg: 24,
     xl: 32,
+    pill: 999,
 } as const;
 
 export const MaxContentWidth = 560;
