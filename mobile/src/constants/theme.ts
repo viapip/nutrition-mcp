@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 
 /**
- * «VOLT» — кислотный лайм на чернильно-чёрном (light: бумага + олива).
+ * «SAGE» — мягкая мята на тёмном графите (light: туман + глубокий шалфей).
  * Дисплей — Unbounded (широкая геометрика, кириллица), текст — Golos Text.
  * Chart hues validated with dataviz six-checks (CVD, chroma, lightness band,
  * contrast) per mode — do not eyeball-adjust protein/carbs/fat/water values.
@@ -9,16 +9,16 @@ import { Platform } from "react-native";
  */
 export const Colors = {
     light: {
-        surface: "#f3f5ea",
+        surface: "#eef4ef",
         surfaceElevated: "#ffffff",
-        ink: "#191d10",
-        inkSecondary: "#4b523c",
-        inkMuted: "#5c644a",
-        hairline: "#dde2cd",
-        accent: "#4e6c07",
+        ink: "#17201b",
+        inkSecondary: "#47554d",
+        inkMuted: "#57655c",
+        hairline: "#d7e0d9",
+        accent: "#1f7a5c",
         onAccent: "#ffffff",
-        // Прозрачная лаймовая подложка для чипов/подсветок
-        accentSoft: "rgba(78, 108, 7, 0.12)",
+        // Прозрачная мятная подложка для чипов/подсветок
+        accentSoft: "rgba(31, 122, 92, 0.12)",
         protein: "#1f8f56",
         carbs: "#a8730a",
         fat: "#cb3f2e",
@@ -26,15 +26,15 @@ export const Colors = {
         danger: "#a83223",
     },
     dark: {
-        surface: "#0e100b",
-        surfaceElevated: "#181b13",
-        ink: "#f1f4e8",
-        inkSecondary: "#aab29a",
-        inkMuted: "#939b81",
-        hairline: "#262a1e",
-        accent: "#cff54a",
-        onAccent: "#161a06",
-        accentSoft: "rgba(207, 245, 74, 0.13)",
+        surface: "#101413",
+        surfaceElevated: "#1a201e",
+        ink: "#eef4ef",
+        inkSecondary: "#a3b3ab",
+        inkMuted: "#8d9c94",
+        hairline: "#29312d",
+        accent: "#7fd4b4",
+        onAccent: "#0c1f18",
+        accentSoft: "rgba(127, 212, 180, 0.13)",
         protein: "#2fa163",
         carbs: "#bd8a14",
         fat: "#d4553a",

@@ -3,16 +3,16 @@ import { FlexWidget, TextWidget } from "react-native-android-widget";
 import type { DashboardData } from "@/lib/api";
 
 /** Виджет «день»: остаток ккал, макросы, кнопки в чат. RemoteViews не умеют
- * ввод текста и кастомные шрифты — системный sans, всегда VOLT dark. */
+ * ввод текста и кастомные шрифты — системный sans, всегда SAGE dark. */
 
 // Синхронизировать с constants/theme.ts (dark)
 const C = {
-    surface: "#0e100b",
-    surfaceElevated: "#181b13",
-    ink: "#f1f4e8",
-    inkMuted: "#939b81",
-    accent: "#cff54a",
-    onAccent: "#161a06",
+    surface: "#101413",
+    surfaceElevated: "#1a201e",
+    ink: "#eef4ef",
+    inkMuted: "#8d9c94",
+    accent: "#7fd4b4",
+    onAccent: "#0c1f18",
     danger: "#ff8672",
     protein: "#2fa163",
     carbs: "#bd8a14",

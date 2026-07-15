@@ -9,12 +9,13 @@ import { NutritionWidget } from "./NutritionWidget";
 export async function buildWidget(
     info: WidgetInfo,
 ): Promise<React.JSX.Element> {
-    const token = await getToken();
-    if (!token) return <NutritionWidget width={info.width} state="login" />;
     try {
+        const token = await getToken();
+        if (!token) return <NutritionWidget width={info.width} state="login" />;
         const data = await getDashboard();
         return <NutritionWidget width={info.width} data={data} />;
-    } catch {
+    } catch (err) {
+        console.warn("[widget] build failed:", err);
         return <NutritionWidget width={info.width} state="error" />;
     }
 }
