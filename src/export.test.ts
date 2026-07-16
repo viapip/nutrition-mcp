@@ -74,6 +74,22 @@ test("quotes and escapes fields containing commas, quotes, and newlines", () => 
     expect(row).toContain('"line1\nline2"');
 });
 
+test("neutralizes CSV-injection formulas with a leading apostrophe", () => {
+    const csv = buildMealsCsv(
+        [meal({ description: "=1+2", notes: "@SUM(A1)" })],
+        "UTC",
+    );
+    const row = csv.split("\n")[1]!;
+    expect(row).toContain("'=1+2");
+    expect(row).toContain("'@SUM(A1)");
+});
+
+test("still quotes a formula cell that also contains a delimiter", () => {
+    const csv = buildMealsCsv([meal({ description: "=1,2" })], "UTC");
+    const row = csv.split("\n")[1]!;
+    expect(row).toContain('"\'=1,2"');
+});
+
 test("exportMeals fails fast on a malformed BASE_URL, before any DB work", async () => {
     const prev = process.env.BASE_URL;
     process.env.BASE_URL = "your-domain.com"; // missing scheme

@@ -1,5 +1,5 @@
 import { router, useFocusEffect, type Href } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
     Animated,
     Pressable,
@@ -20,6 +20,7 @@ import {
     type WeekDay,
 } from "@/components/charts";
 import { GoalsEditor, MealEditor, WeightEditor } from "@/components/editors";
+import { FadeIn, usePulse } from "@/components/motion";
 import {
     Colors,
     Fonts,
@@ -34,10 +35,13 @@ import {
     getDashboard,
     getStats,
     getToken,
+    newIdempotencyKey,
     removeWater,
     type DashboardData,
     type MealRow,
 } from "@/lib/api";
+import { useRequireAuth } from "@/lib/auth";
+import { kgText, weightDeltaText } from "@/lib/format";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 const MEAL_LABEL: Record<string, string> = {
@@ -53,8 +57,12 @@ const WATER_PRESETS = [150, 250, 500];
 // после генерации .expo/types — до тех пор нужен каст.
 const STATS_ROUTE = "/stats" as Href;
 
-// Кэш стрика по «сегодня» сервера (end); любая запись дня сбрасывает
-let streakCache: { day: string; current: number } | null = null;
+// Кэш стрика+недели по «сегодня» сервера (end); любая запись дня сбрасывает
+let streakCache: {
+    day: string;
+    current: number;
+    week: Record<string, WeekDay>;
+} | null = null;
 
 // Глобаль переживает logout — login.tsx сбрасывает, иначе виден чужой стрик
 export function resetStreakCache() {
@@ -110,74 +118,13 @@ function greeting(): string {
     return "Добрый вечер";
 }
 
-function kgText(g: number): string {
-    return (g / 1000).toLocaleString("ru-RU", {
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
-    });
-}
-
-/** Staggered entrance: fade + lift, once per mount. */
-function FadeIn({
-    delay,
-    children,
-}: {
-    delay: number;
-    children: React.ReactNode;
-}) {
-    const [anim] = useState(() => new Animated.Value(0));
-    useEffect(() => {
-        Animated.timing(anim, {
-            toValue: 1,
-            duration: 420,
-            delay,
-            useNativeDriver: true,
-        }).start();
-    }, [anim, delay]);
-    return (
-        <Animated.View
-            style={{
-                opacity: anim,
-                transform: [
-                    {
-                        translateY: anim.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [14, 0],
-                        }),
-                    },
-                ],
-            }}
-        >
-            {children}
-        </Animated.View>
-    );
-}
-
 /** Pulsing placeholder shown while the first dashboard load is in flight. */
 function DashboardSkeleton({
     theme,
 }: {
     theme: (typeof Colors)["light"] | (typeof Colors)["dark"];
 }) {
-    const [pulse] = useState(() => new Animated.Value(0.35));
-    useEffect(() => {
-        const loop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulse, {
-                    toValue: 0.75,
-                    duration: 700,
-                    useNativeDriver: true,
-                }),
-                Animated.timing(pulse, {
-                    toValue: 0.35,
-                    duration: 700,
-                    useNativeDriver: true,
-                }),
-            ]),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [pulse]);
+    const pulse = usePulse();
 
     const block = (extra: object) => [
         { backgroundColor: theme.surfaceElevated, opacity: pulse },
@@ -268,6 +215,7 @@ export default function DashboardScreen() {
     const { width } = useWindowDimensions();
     const contentW =
         Math.min(width, MaxContentWidth) - Spacing.lg * 2 - Spacing.md * 2;
+    const { guard, onError } = useRequireAuth();
 
     const [data, setData] = useState<DashboardData | null>(null);
     const [failed, setFailed] = useState(false);
@@ -276,12 +224,15 @@ export default function DashboardScreen() {
     const [viewDate, setViewDate] = useState<string | null>(null);
     // Дата «сегодня» по серверу — опора для навигации
     const [todayDate, setTodayDate] = useState<string | null>(null);
-    // Прошлые 6 дней недели: date → {pct, over}; сегодня считается из data
-    const [pastWeek, setPastWeek] = useState<Record<string, WeekDay>>({});
+    // Неделя из getStats: date → {pct, over}; сегодня перекрываем из data
+    const [weekByDate, setWeekByDate] = useState<Record<string, WeekDay>>({});
     const [waterNote, setWaterNote] = useState<string | null>(null);
     const [waterBusy, setWaterBusy] = useState(false);
     const waterLock = useRef(false);
     const repeatLock = useRef(false);
+    // Ключ-на-действие: держится до успеха, повтор того же — тот же ключ.
+    const waterKey = useRef<{ ml: number; key: string } | null>(null);
+    const repeatKey = useRef<{ id: string; key: string } | null>(null);
     const [mealEditor, setMealEditor] = useState<{
         visible: boolean;
         meal: MealRow | null;
@@ -293,57 +244,45 @@ export default function DashboardScreen() {
     const [goalsVisible, setGoalsVisible] = useState(false);
     const [streak, setStreak] = useState<number | null>(null);
 
-    // Отсекает устаревший ответ, когда editorDone перезапросил стрик раньше.
-    const streakSeq = useRef(0);
-    const loadStreak = useCallback(async (serverToday?: string | null) => {
+    // Один getStats кормит и бейдж стрика, и полосу недели. Отсекает
+    // устаревший залп; версия по токену — ответ старой сессии не пишет кэш.
+    const statsSeq = useRef(0);
+    const loadStats = useCallback(async (serverToday?: string | null) => {
         if (
             streakCache &&
             streakCache.day === (serverToday ?? streakCache.day)
         ) {
             setStreak(streakCache.current);
+            setWeekByDate(streakCache.week);
             return;
         }
-        const seq = ++streakSeq.current;
+        const seq = ++statsSeq.current;
         try {
+            const sessionToken = await getToken();
             const s = await getStats(30);
-            if (seq !== streakSeq.current) return;
-            streakCache = { day: s.end, current: s.streak.current };
-            setStreak(s.streak.current);
-        } catch {
-            // без статистики бейдж просто не показывается
-        }
-    }, []);
-
-    // 6 прошлых дней — отдельными запросами, weekSeq отсекает устаревший залп;
-    // прошлое меняют только редакторы, на фокус не перезагружаем
-    const weekLoadedFor = useRef<string | null>(null);
-    const weekSeq = useRef(0);
-    const loadWeek = useCallback(async (today: string) => {
-        const seq = ++weekSeq.current;
-        const dates = Array.from({ length: 6 }, (_, i) =>
-            shiftDate(today, i - 6),
-        );
-        const results = await Promise.allSettled(
-            dates.map((d) => getDashboard(d)),
-        );
-        if (seq !== weekSeq.current) return;
-        const next: Record<string, WeekDay> = {};
-        results.forEach((r, i) => {
-            const date = dates[i]!;
-            if (r.status !== "fulfilled") {
-                // Пусть следующий фокус экрана попробует добрать день ещё раз.
-                weekLoadedFor.current = null;
-                next[date] = { date, pct: null, over: false };
+            // Устаревший залп или ответ старой сессии (logout/смена юзера) —
+            // не должен записать глобальный кэш и чужой стрик.
+            if (
+                seq !== statsSeq.current ||
+                (await getToken()) !== sessionToken
+            ) {
                 return;
             }
-            const { eaten, goal } = r.value.calories;
-            next[date] = {
-                date,
-                pct: goal ? eaten / goal : null,
-                over: goal != null && eaten > goal,
-            };
-        });
-        setPastWeek(next);
+            const goal = s.goals.daily_calories;
+            const week: Record<string, WeekDay> = {};
+            for (const d of s.days.slice(-7)) {
+                week[d.date] = {
+                    date: d.date,
+                    pct: goal ? d.calories / goal : null,
+                    over: goal != null && d.calories > goal,
+                };
+            }
+            streakCache = { day: s.end, current: s.streak.current, week };
+            setStreak(s.streak.current);
+            setWeekByDate(week);
+        } catch {
+            // без статистики бейдж/полоса просто не показываются
+        }
     }, []);
 
     // Отсекает устаревший ответ, когда день перещёлкнули до прихода первого.
@@ -356,23 +295,18 @@ export default function DashboardScreen() {
             setData(d);
             if (viewDate == null) {
                 setTodayDate(d.date);
-                if (weekLoadedFor.current !== d.date) {
-                    weekLoadedFor.current = d.date;
-                    void loadWeek(d.date);
-                }
-                // Сервер перешагнул на новый день — вчерашний стрик неактуален.
+                // Сервер перешагнул на новый день — стрик и неделя устарели.
                 if (streakCache && streakCache.day !== d.date) {
                     streakCache = null;
-                    void loadStreak();
+                    void loadStats();
                 }
             }
             setFailed(false);
         } catch (err) {
             // Only a rejected token means logout; a transient server/network
             // error keeps whatever is on screen and lets the user retry.
-            if (err instanceof Error && err.message === "unauthorized") {
-                router.replace("/login");
-            } else if (seq === loadSeq.current) {
+            if (onError(err)) return;
+            if (seq === loadSeq.current) {
                 setFailed(true);
                 // Day switch failed — snap viewDate back to the day still on
                 // screen so actions/labels match the visible data.
@@ -388,24 +322,20 @@ export default function DashboardScreen() {
                 });
             }
         }
-    }, [viewDate, todayDate, loadWeek, loadStreak]);
+    }, [viewDate, todayDate, onError, loadStats]);
 
     // Reload whenever the screen regains focus (e.g. returning from chat,
     // where the assistant may have logged something).
     useFocusEffect(
         useCallback(() => {
-            getToken().then((t) => {
-                if (!t) {
-                    router.replace("/login");
-                    return;
-                }
+            guard(() => {
                 load();
                 // Возврат из чата мог изменить сегодняшнюю серию — не доверяем
-                // дневному кэшу, перезапрашиваем стрик.
+                // дневному кэшу, перезапрашиваем стрик и неделю.
                 streakCache = null;
-                void loadStreak(todayDate);
+                void loadStats(todayDate);
             });
-        }, [load, loadStreak, todayDate]),
+        }, [guard, load, loadStats, todayDate]),
     );
 
     const refresh = useCallback(async () => {
@@ -424,11 +354,10 @@ export default function DashboardScreen() {
         successBuzz();
         closeEditors();
         void load();
-        // Правка могла коснуться прошлого дня — обновляем и полосу недели.
-        if (todayDate) void loadWeek(todayDate);
+        // Правка могла коснуться прошлого дня — loadStats обновит и неделю.
         streakCache = null;
-        void loadStreak();
-    }, [closeEditors, load, loadWeek, loadStreak, todayDate]);
+        void loadStats();
+    }, [closeEditors, load, loadStats]);
 
     const isToday = viewDate == null;
 
@@ -456,17 +385,22 @@ export default function DashboardScreen() {
             setWaterNote(null);
             // Optimistic total — the bars catch up after the reload.
             bumpWater(ml);
+            // Тот же мл, повторённый после сбоя, дедупится сервером; успех
+            // сбрасывает ключ — следующий стакан пишется как новый.
+            const key =
+                waterKey.current?.ml === ml
+                    ? waterKey.current
+                    : { ml, key: newIdempotencyKey() };
+            waterKey.current = key;
             try {
-                await addWater(ml);
+                await addWater(ml, key.key);
+                waterKey.current = null;
                 // Первый стакан за день двигает стрик — сбрасываем кэш бейджа.
                 streakCache = null;
                 await load();
-                void loadStreak(todayDate);
+                void loadStats(todayDate);
             } catch (err) {
-                if (err instanceof Error && err.message === "unauthorized") {
-                    router.replace("/login");
-                    return;
-                }
+                if (onError(err)) return;
                 // Roll the bump back first: if the reload below also dies
                 // offline, the screen must not keep phantom millilitres.
                 bumpWater(-ml);
@@ -477,7 +411,7 @@ export default function DashboardScreen() {
                 setWaterBusy(false);
             }
         },
-        [bumpWater, load, loadStreak, todayDate],
+        [bumpWater, load, loadStats, todayDate, onError],
     );
 
     const deleteWater = useCallback(
@@ -488,14 +422,11 @@ export default function DashboardScreen() {
                 await removeWater(id);
                 await load();
             } catch (err) {
-                if (err instanceof Error && err.message === "unauthorized") {
-                    router.replace("/login");
-                    return;
-                }
+                if (onError(err)) return;
                 setWaterNote("Не удалилось — проверь сеть и попробуй ещё.");
             }
         },
-        [load],
+        [load, onError],
     );
 
     // «Повторить приём»: копия записи логируется сейчас, поэтому прыгаем на сегодня.
@@ -505,27 +436,39 @@ export default function DashboardScreen() {
             if (repeatLock.current) return;
             repeatLock.current = true;
             tapBuzz();
+            // Ключ на этот приём: повтор после сбоя дедупится, успех сбрасывает
+            // — «повторить» ещё раз пишет новый.
+            const key =
+                repeatKey.current?.id === meal.id
+                    ? repeatKey.current
+                    : { id: meal.id, key: newIdempotencyKey() };
+            repeatKey.current = key;
             try {
-                await addMeal({
-                    description: meal.description,
-                    meal_type: meal.meal_type ?? "snack",
-                    calories: meal.calories,
-                    protein_g: meal.protein_g,
-                    carbs_g: meal.carbs_g,
-                    fat_g: meal.fat_g,
-                });
+                await addMeal(
+                    {
+                        description: meal.description,
+                        meal_type: meal.meal_type ?? "snack",
+                        calories: meal.calories,
+                        protein_g: meal.protein_g,
+                        carbs_g: meal.carbs_g,
+                        fat_g: meal.fat_g,
+                    },
+                    key.key,
+                );
+                repeatKey.current = null;
                 successBuzz();
                 streakCache = null;
-                void loadStreak(todayDate);
+                void loadStats(todayDate);
                 if (viewDate == null) void load();
                 else setViewDate(null);
-            } catch {
-                // тихий сбой здесь хуже молчания — но повтор не критичен
+            } catch (err) {
+                // 401 → login; прочий сбой повтора не критичен, молчим.
+                onError(err);
             } finally {
                 repeatLock.current = false;
             }
         },
-        [load, viewDate, loadStreak, todayDate],
+        [load, viewDate, loadStats, todayDate, onError],
     );
 
     if (!data) {
@@ -601,21 +544,20 @@ export default function DashboardScreen() {
         streak != null && streak >= 30
             ? "30+ дней"
             : `${streak ?? 0} ${dayWord(streak ?? 0)}`;
+    const weightFootnote = weightDeltaText(weightDeltaG, toGoalG);
 
-    // Неделя: 6 прошлых дней из pastWeek + сегодняшний слот из живых данных.
-    const weekDays: WeekDay[] = Array.from({ length: 6 }, (_, i) => {
+    // Неделя: 7 дней из getStats; сегодняшний слот перекрываем живыми данными.
+    const weekDays: WeekDay[] = Array.from({ length: 7 }, (_, i) => {
         const date = shiftDate(today, i - 6);
-        return pastWeek[date] ?? { date, pct: null, over: false };
+        if (date === today && data.date === today) {
+            return {
+                date: today,
+                pct: kcalGoal ? kcalEaten / kcalGoal : null,
+                over: kcalOver,
+            };
+        }
+        return weekByDate[date] ?? { date, pct: null, over: false };
     });
-    weekDays.push(
-        data.date === today
-            ? {
-                  date: today,
-                  pct: kcalGoal ? kcalEaten / kcalGoal : null,
-                  over: kcalOver,
-              }
-            : (pastWeek[today] ?? { date: today, pct: null, over: false }),
-    );
 
     const selectDay = (date: string) => {
         tapBuzz();
@@ -1194,7 +1136,7 @@ export default function DashboardScreen() {
                                     )}
                                 </View>
                             )}
-                            {(weightDeltaG != null || toGoalG != null) && (
+                            {weightFootnote && (
                                 <Text
                                     style={[
                                         styles.footnote,
@@ -1202,17 +1144,7 @@ export default function DashboardScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    {weightDeltaG != null &&
-                                        `${weightDeltaG > 0 ? "+" : "−"}${kgText(
-                                            Math.abs(weightDeltaG),
-                                        )} кг за 30 дней`}
-                                    {weightDeltaG != null &&
-                                        toGoalG != null &&
-                                        " · "}
-                                    {toGoalG != null &&
-                                        (Math.abs(toGoalG) < 100
-                                            ? "цель достигнута"
-                                            : `до цели ${kgText(Math.abs(toGoalG))} кг`)}
+                                    {weightFootnote}
                                 </Text>
                             )}
                         </View>

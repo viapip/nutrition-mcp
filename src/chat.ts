@@ -385,7 +385,8 @@ function collectProposal(
 /** The dashboard aggregation for a given local date (defaults to today). */
 async function daySnapshot(userId: string, date?: string) {
     const tz = await getUserTimezone(userId);
-    const day = date ?? todayInTz(tz);
+    const today = todayInTz(tz);
+    const day = date ?? today;
     const [meals, water, weights, latest, goals] = await Promise.all([
         getMealsByDate(userId, day, tz),
         getWaterByDate(userId, day, tz),
@@ -393,7 +394,10 @@ async function daySnapshot(userId: string, date?: string) {
         getLatestWeight(userId),
         getNutritionGoals(userId),
     ]);
-    return buildDashboard(day, tz, meals, water, weights, latest, goals);
+    // Прошлый день: «текущий вес» — последнее известное к этому дню, а не
+    // сегодняшнее, иначе карточка расходится с графиком (как /api/dashboard).
+    const asOf = day === today ? latest : (weights.at(-1) ?? null);
+    return buildDashboard(day, tz, meals, water, weights, asOf, goals);
 }
 
 /** Один tool call; ошибки уходят модели JSON-пейлоадом. idem делает
@@ -762,7 +766,7 @@ export async function runChatTurn(
 }
 
 export function createChatRouter() {
-    const chat = new Hono();
+    const chat = new Hono<{ Variables: { userId: string } }>();
 
     chat.post("/api/chat", authenticateBearer, rateLimit, async (c) => {
         let history: ChatMessage[];
@@ -800,7 +804,7 @@ export function createChatRouter() {
         ) {
             return c.json({ error: "invalid_request" }, 400);
         }
-        const userId = c.get("userId") as string;
+        const userId = c.get("userId");
 
         // The user's own key wins; the server key is the shared fallback.
         const profile = await getProfile(userId);

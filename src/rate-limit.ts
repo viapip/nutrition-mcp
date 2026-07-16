@@ -62,8 +62,3 @@ export function checkRateLimit(userId: string): RateLimitResult {
         limit: LIMIT_PER_WINDOW,
     };
 }
-
-// Exposed for tests.
-export function _resetBuckets(): void {
-    buckets.clear();
-}

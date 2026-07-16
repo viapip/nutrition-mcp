@@ -261,19 +261,13 @@ if (!process.env.BASE_URL) {
     );
 }
 
-// ponytail: idempotent startup ALTER instead of a migration framework —
-// db/init only runs on a fresh data dir, existing deployments need this.
-// Awaited so no request can hit the missing column mid-migration.
+// ponytail: idempotent startup DDL instead of a migration framework — db/init
+// only runs on a fresh data dir, so existing deployments need these. Awaited so
+// no request can hit a missing column/table mid-migration. Table/column
+// migrations are mandatory: if one fails the schema is inconsistent and the app
+// would 500 in confusing ways, so we exit rather than serve a broken server.
 try {
     await getSql()`alter table profiles add column if not exists llm_api_key text`;
-} catch (err) {
-    console.error("Startup migration failed:", err);
-}
-
-// ponytail: idempotent startup DDL for the dishes catalog — db/init only runs
-// on a fresh data dir, so existing deployments create it here. Awaited so no
-// request can hit a missing table mid-migration.
-try {
     await getSql()`
         create table if not exists dishes (
             id uuid primary key default gen_random_uuid(),
@@ -288,10 +282,31 @@ try {
             fat_g numeric(6, 1),
             created_at timestamptz not null default now()
         )`;
-    await getSql()`create index if not exists idx_dishes_user_id on dishes (user_id)`;
     await getSql()`create unique index if not exists uniq_dishes_user_lower_name on dishes (user_id, lower(name))`;
 } catch (err) {
-    console.error("Startup migration (dishes) failed:", err);
+    console.error("Startup migration failed:", err);
+    process.exit(1);
+}
+
+// Index migration is performance-only, so a failure logs but does not abort the
+// boot. Replaces the separate (user_id) / (logged_at) indexes with a composite
+// per log table (matching "where user_id=? and logged_at [range] order by
+// logged_at") and drops singles already covered by a composite/unique prefix.
+try {
+    const db = getSql();
+    await db`create index if not exists idx_meals_user_logged_at on meals (user_id, logged_at)`;
+    await db`create index if not exists idx_water_log_user_logged_at on water_log (user_id, logged_at)`;
+    await db`create index if not exists idx_weight_log_user_logged_at on weight_log (user_id, logged_at)`;
+    await db`drop index if exists idx_meals_user_id`;
+    await db`drop index if exists idx_meals_logged_at`;
+    await db`drop index if exists idx_water_log_user_id`;
+    await db`drop index if exists idx_water_log_logged_at`;
+    await db`drop index if exists idx_weight_log_user_id`;
+    await db`drop index if exists idx_weight_log_logged_at`;
+    await db`drop index if exists idx_dishes_user_id`;
+    await db`drop index if exists idx_tool_analytics_user_id`;
+} catch (err) {
+    console.error("Startup index migration failed:", err);
 }
 
 // Periodically delete expired meal-export files from the storage bucket.

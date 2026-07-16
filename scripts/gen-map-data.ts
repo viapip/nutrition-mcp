@@ -29,10 +29,10 @@ function parseISO6709(s: string): [number, number] | null {
     if (!m) return null;
     const lat =
         (m[1] === "-" ? -1 : 1) *
-        (+m[2] + +m[3] / 60 + (m[4] ? +m[4] / 3600 : 0));
+        (+m[2]! + +m[3]! / 60 + (m[4] ? +m[4] / 3600 : 0));
     const lon =
         (m[5] === "-" ? -1 : 1) *
-        (+m[6] + +m[7] / 60 + (m[8] ? +m[8] / 3600 : 0));
+        (+m[6]! + +m[7]! / 60 + (m[8] ? +m[8] / 3600 : 0));
     return [lat, lon];
 }
 
@@ -42,8 +42,8 @@ for (const line of zoneTab.split("\n")) {
     if (!line || line.startsWith("#")) continue;
     const cols = line.split("\t");
     if (cols.length < 3) continue;
-    const coord = parseISO6709(cols[1]);
-    if (coord) tzCoords[cols[2]] = coord;
+    const coord = parseISO6709(cols[1]!);
+    if (coord) tzCoords[cols[2]!] = coord;
 }
 // Common aliases that may not be primary rows in every tzdata version.
 const aliases: Record<string, string> = {
@@ -68,7 +68,10 @@ for (const z of ["UTC", "Etc/UTC", "GMT", "Etc/GMT", "Etc/Greenwich"]) {
 }
 
 // ---- land dot-matrix from Natural Earth ----
-const geo = await (await fetch(LAND_GEOJSON)).json();
+type Feature = { geometry: { type: string; coordinates: any } };
+const geo = (await (await fetch(LAND_GEOJSON)).json()) as {
+    features: Feature[];
+};
 type Ring = number[][];
 const rings: Ring[] = [];
 for (const f of geo.features) {
@@ -80,10 +83,12 @@ for (const f of geo.features) {
 function inRing(lon: number, lat: number, ring: Ring): boolean {
     let inside = false;
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        const xi = ring[i][0],
-            yi = ring[i][1];
-        const xj = ring[j][0],
-            yj = ring[j][1];
+        const pi = ring[i]!,
+            pj = ring[j]!;
+        const xi = pi[0]!,
+            yi = pi[1]!;
+        const xj = pj[0]!,
+            yj = pj[1]!;
         if (
             yi > lat !== yj > lat &&
             lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi

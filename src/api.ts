@@ -34,7 +34,7 @@ import {
     type WeightEntry,
     type NutritionGoals,
 } from "./db.js";
-import { authenticateBearer } from "./middleware.js";
+import { authenticateBearer, rateLimit } from "./middleware.js";
 import { loginRateLimited } from "./oauth.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { todayInTz, shiftLocalDate, hourInTz, dateInTz } from "./tz.js";
@@ -255,10 +255,19 @@ export function buildStats(
 
 const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"] as const;
 
-/** Positive finite number or throws — trust-boundary check for body fields. */
+/**
+ * Non-negative finite number or throws — trust-boundary check for body fields.
+ * Zero is valid (e.g. 0 g of fat, a 0-calorie drink); negatives are rejected.
+ */
 function posNum(v: unknown): number {
+    // Reject non-numeric inputs before Number() coerces them: "", "  ", false,
+    // [] all become 0 and would silently overwrite a field with zero.
+    if (typeof v !== "number") {
+        if (typeof v !== "string" || v.trim() === "")
+            throw new Error("bad number");
+    }
     const n = Number(v);
-    if (!Number.isFinite(n) || n <= 0) throw new Error("bad number");
+    if (!Number.isFinite(n) || n < 0) throw new Error("bad number");
     return n;
 }
 
@@ -317,7 +326,7 @@ export function dishFields(
     }
     for (const k of ["calories", "protein_g", "carbs_g", "fat_g"] as const) {
         if (body[k] === undefined) continue;
-        // null clears a macro; a present value must be positive
+        // null clears a macro; a present value must be a non-negative number
         out[k] = body[k] === null ? null : posNum(body[k]);
     }
     return out;
@@ -472,7 +481,7 @@ export function createApiRouter() {
 
     // ----- manual editing (the chat logs things, these correct them) -----
 
-    api.post("/api/meals", authenticateBearer, async (c) => {
+    api.post("/api/meals", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             const fields = mealFields(body, false);
@@ -486,7 +495,7 @@ export function createApiRouter() {
         }
     });
 
-    api.patch("/api/meals/:id", authenticateBearer, async (c) => {
+    api.patch("/api/meals/:id", authenticateBearer, rateLimit, async (c) => {
         let fields: Partial<MealInput>;
         try {
             fields = mealFields(await jsonBody(c), true);
@@ -496,7 +505,7 @@ export function createApiRouter() {
         try {
             const meal = await updateMeal(
                 c.get("userId") as string,
-                c.req.param("id"),
+                c.req.param("id")!,
                 fields,
             );
             return c.json({ meal });
@@ -505,17 +514,17 @@ export function createApiRouter() {
         }
     });
 
-    api.delete("/api/meals/:id", authenticateBearer, async (c) => {
+    api.delete("/api/meals/:id", authenticateBearer, rateLimit, async (c) => {
         const deleted = await deleteMeal(
             c.get("userId") as string,
-            c.req.param("id"),
+            c.req.param("id")!,
         );
         return deleted
             ? c.json({ ok: true })
             : c.json({ error: "not_found" }, 404);
     });
 
-    api.post("/api/water", authenticateBearer, async (c) => {
+    api.post("/api/water", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             const { entry } = await insertWater(c.get("userId") as string, {
@@ -528,17 +537,17 @@ export function createApiRouter() {
         }
     });
 
-    api.delete("/api/water/:id", authenticateBearer, async (c) => {
+    api.delete("/api/water/:id", authenticateBearer, rateLimit, async (c) => {
         const deleted = await deleteWater(
             c.get("userId") as string,
-            c.req.param("id"),
+            c.req.param("id")!,
         );
         return deleted
             ? c.json({ ok: true })
             : c.json({ error: "not_found" }, 404);
     });
 
-    api.post("/api/weight", authenticateBearer, async (c) => {
+    api.post("/api/weight", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             const { entry } = await insertWeight(c.get("userId") as string, {
@@ -551,7 +560,7 @@ export function createApiRouter() {
         }
     });
 
-    api.patch("/api/weight/:id", authenticateBearer, async (c) => {
+    api.patch("/api/weight/:id", authenticateBearer, rateLimit, async (c) => {
         let weightG: number;
         try {
             const body = await jsonBody(c);
@@ -562,7 +571,7 @@ export function createApiRouter() {
         try {
             const entry = await updateWeight(
                 c.get("userId") as string,
-                c.req.param("id"),
+                c.req.param("id")!,
                 { weight_g: weightG },
             );
             return c.json({ entry });
@@ -571,10 +580,10 @@ export function createApiRouter() {
         }
     });
 
-    api.delete("/api/weight/:id", authenticateBearer, async (c) => {
+    api.delete("/api/weight/:id", authenticateBearer, rateLimit, async (c) => {
         const deleted = await deleteWeight(
             c.get("userId") as string,
-            c.req.param("id"),
+            c.req.param("id")!,
         );
         return deleted
             ? c.json({ ok: true })
@@ -600,7 +609,7 @@ export function createApiRouter() {
 
     // Upsert by (user_id, lower(name)) makes a re-POST idempotent on its own,
     // so an idempotency_key is unnecessary here.
-    api.post("/api/dishes", authenticateBearer, async (c) => {
+    api.post("/api/dishes", authenticateBearer, rateLimit, async (c) => {
         try {
             const fields = dishFields(await jsonBody(c), false);
             const dish = await insertDish(
@@ -613,7 +622,7 @@ export function createApiRouter() {
         }
     });
 
-    api.patch("/api/dishes/:id", authenticateBearer, async (c) => {
+    api.patch("/api/dishes/:id", authenticateBearer, rateLimit, async (c) => {
         let fields: Partial<DishInput>;
         try {
             fields = dishFields(await jsonBody(c), true);
@@ -623,7 +632,7 @@ export function createApiRouter() {
         try {
             const dish = await updateDish(
                 c.get("userId") as string,
-                c.req.param("id"),
+                c.req.param("id")!,
                 fields,
             );
             return c.json({ dish });
@@ -632,10 +641,10 @@ export function createApiRouter() {
         }
     });
 
-    api.delete("/api/dishes/:id", authenticateBearer, async (c) => {
+    api.delete("/api/dishes/:id", authenticateBearer, rateLimit, async (c) => {
         const deleted = await deleteDish(
             c.get("userId") as string,
-            c.req.param("id"),
+            c.req.param("id")!,
         );
         return deleted
             ? c.json({ ok: true })
@@ -651,7 +660,7 @@ export function createApiRouter() {
         });
     });
 
-    api.put("/api/settings/llm", authenticateBearer, async (c) => {
+    api.put("/api/settings/llm", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             let key: string | null = null;
@@ -674,7 +683,7 @@ export function createApiRouter() {
     });
 
     // Full replace: omitted fields become null (clears that goal).
-    api.put("/api/goals", authenticateBearer, async (c) => {
+    api.put("/api/goals", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             const opt = (v: unknown) => (v == null ? null : posNum(v));

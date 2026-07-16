@@ -35,6 +35,9 @@ jobs:
             - name: Run tests
               run: bun test
 
+            - name: Type-check
+              run: bunx tsc --noEmit
+
             # Guard against publishing a mismatched version: the pushed tag must match
             # the version committed in server.json (the source of truth maintained
             # alongside package.json and src/mcp.ts).

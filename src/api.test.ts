@@ -114,6 +114,8 @@ test("buildDashboard with no data and no goals is all zeros/nulls", () => {
 test("mealFields: PATCH null clears a macro, junk is rejected", () => {
     expect(mealFields({ calories: null }, true)).toEqual({ calories: null });
     expect(mealFields({ protein_g: 12 }, true)).toEqual({ protein_g: 12 });
+    // Zero is a valid value (0-calorie drink), only negatives are rejected.
+    expect(mealFields({ calories: 0 }, true)).toEqual({ calories: 0 });
     // on POST null just means "not given"
     expect(
         mealFields(
@@ -123,6 +125,10 @@ test("mealFields: PATCH null clears a macro, junk is rejected", () => {
     ).toEqual({ description: "x", meal_type: "snack" });
     expect(() => mealFields({ calories: "junk" }, true)).toThrow();
     expect(() => mealFields({ calories: -1 }, true)).toThrow();
+    // Empty/blank strings, booleans and arrays must not coerce to 0.
+    for (const junk of ["", "  ", false, []]) {
+        expect(() => mealFields({ calories: junk }, true)).toThrow();
+    }
 });
 
 test("buildStats: day fill, pending-today streak, frequent meals", () => {

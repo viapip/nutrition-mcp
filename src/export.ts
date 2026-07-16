@@ -27,7 +27,12 @@ const CSV_COLUMNS = [
 /** Quote a CSV field only when it contains a delimiter, quote, or newline. */
 function csvEscape(value: string | number | null | undefined): string {
     if (value == null) return "";
-    const str = String(value);
+    let str = String(value);
+    // CSV-injection guard: a leading =, +, -, @ or control char makes a
+    // spreadsheet evaluate the cell as a formula. Prefix ' to force it to text.
+    if (/^[=+\-@\t\r]/.test(str)) {
+        str = `'${str}`;
+    }
     if (/[",\r\n]/.test(str)) {
         return `"${str.replace(/"/g, '""')}"`;
     }

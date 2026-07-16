@@ -265,6 +265,8 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "log_meal",
                 async () => {
+                    if (args.logged_at !== undefined)
+                        validateLoggedAt(args.logged_at, Date.now());
                     const { meal, deduplicated } = await insertMeal(
                         userId,
                         args,
@@ -636,26 +638,31 @@ function registerTools(server: McpServer, userId: string) {
             inputSchema: {
                 daily_calories: z.coerce
                     .number()
+                    .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily calorie target (kcal). Null to clear."),
                 daily_protein_g: z.coerce
                     .number()
+                    .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily protein target (grams). Null to clear."),
                 daily_carbs_g: z.coerce
                     .number()
+                    .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily carbs target (grams). Null to clear."),
                 daily_fat_g: z.coerce
                     .number()
+                    .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily fat target (grams). Null to clear."),
                 daily_water_ml: z.coerce
                     .number()
+                    .min(0)
                     .nullable()
                     .optional()
                     .describe(
@@ -901,12 +908,12 @@ function registerTools(server: McpServer, userId: string) {
                 meal_type: z
                     .enum(["breakfast", "lunch", "dinner", "snack"])
                     .optional(),
-                calories: z.coerce.number().optional(),
-                protein_g: z.coerce.number().optional(),
-                carbs_g: z.coerce.number().optional(),
-                fat_g: z.coerce.number().optional(),
+                calories: z.coerce.number().nullable().optional(),
+                protein_g: z.coerce.number().nullable().optional(),
+                carbs_g: z.coerce.number().nullable().optional(),
+                fat_g: z.coerce.number().nullable().optional(),
                 logged_at: z.string().optional(),
-                notes: z.string().optional(),
+                notes: z.string().nullable().optional(),
             },
         },
         async ({ id, ...fields }) => {
@@ -969,6 +976,8 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "log_water",
                 async () => {
+                    if (args.logged_at !== undefined)
+                        validateLoggedAt(args.logged_at, Date.now());
                     const { entry, deduplicated } = await insertWater(
                         userId,
                         args,
@@ -1492,7 +1501,7 @@ function registerTools(server: McpServer, userId: string) {
                         "Unit of the weight value. Defaults to the user's preferred weight unit.",
                     ),
                 logged_at: z.string().optional().describe("ISO 8601 timestamp"),
-                notes: z.string().optional(),
+                notes: z.string().nullable().optional(),
             },
         },
         async ({ id, weight, unit, logged_at, notes }) => {
@@ -1973,31 +1982,29 @@ function registerTools(server: McpServer, userId: string) {
             },
         },
         async ({ confirm }) => {
-            return withAnalytics(
-                "delete_account",
-                async () => {
-                    if (!confirm) {
-                        return {
-                            content: [
-                                {
-                                    type: "text",
-                                    text: "Account deletion cancelled. No data was removed.",
-                                },
-                            ],
-                        };
-                    }
-                    await deleteAllUserData(userId);
-                    return {
-                        content: [
-                            {
-                                type: "text",
-                                text: "Your account and all associated data have been permanently deleted.",
-                            },
-                        ],
-                    };
-                },
-                { userId },
-            );
+            if (!confirm) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: "Account deletion cancelled. No data was removed.",
+                        },
+                    ],
+                };
+            }
+            // Deliberately NOT wrapped in withAnalytics: it persists a
+            // tool_analytics row keyed by user_id AFTER deletion (the table has
+            // no FK), which would outlive a full account wipe. The MCP SDK still
+            // turns a thrown error into an isError result.
+            await deleteAllUserData(userId);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: "Your account and all associated data have been permanently deleted.",
+                    },
+                ],
+            };
         },
     );
 }

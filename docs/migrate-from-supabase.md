@@ -86,9 +86,7 @@ Caveats:
 
 - `tool_analytics.user_id` was `varchar` on Supabase and is `uuid` now (no
   FK), so the values import as-is — including rows for since-deleted users.
-- `registered_clients.redirect_uris` changed from `text[]` to `jsonb`; the
-  table is registration telemetry, so the pragmatic move is to not migrate it.
-  `food_cache` is also safe to drop instead — it refills itself.
+- `food_cache` is safe to drop instead of migrating — it refills itself.
 
 ## 4. Verify, then switch traffic
 

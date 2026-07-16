@@ -21,6 +21,7 @@ import {
     type Theme,
 } from "@/constants/theme";
 import { getSettings, logout, saveLlmKey } from "@/lib/api";
+import { useRequireAuth } from "@/lib/auth";
 import { successBuzz, tapBuzz } from "@/lib/haptics";
 
 /** Status card: where the assistant's requests are billed right now. */
@@ -78,8 +79,11 @@ export default function SettingsScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
 
+    const { onError } = useRequireAuth();
     const [hasKey, setHasKey] = useState<boolean | null>(null);
     const [chatAvailable, setChatAvailable] = useState(true);
+    // Настройки не загрузились (offline) — не выдаём hasKey=false за «общий ключ».
+    const [loadError, setLoadError] = useState(false);
     const [key, setKey] = useState("");
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<string | null>(null);
@@ -92,13 +96,11 @@ export default function SettingsScreen() {
                 setChatAvailable(s.chat_available);
             })
             .catch((err) => {
-                if (err instanceof Error && err.message === "unauthorized") {
-                    router.replace("/login");
-                } else {
-                    setHasKey(false);
-                }
+                if (onError(err)) return;
+                // hasKey остаётся null (неизвестно), а не false.
+                setLoadError(true);
             });
-    }, []);
+    }, [onError]);
 
     const save = async (value: string | null) => {
         if (busy) return;
@@ -108,14 +110,12 @@ export default function SettingsScreen() {
             const s = await saveLlmKey(value);
             setHasKey(s.has_llm_key);
             setChatAvailable(s.chat_available);
+            setLoadError(false);
             setKey("");
             setNote(value ? "Ключ сохранён." : "Ключ удалён.");
             successBuzz();
         } catch (err) {
-            if (err instanceof Error && err.message === "unauthorized") {
-                router.replace("/login");
-                return;
-            }
+            if (onError(err)) return;
             setNote(
                 "Не получилось сохранить — проверь ключ и попробуй ещё раз.",
             );
@@ -172,6 +172,16 @@ export default function SettingsScreen() {
                         {/* No key anywhere → the danger note below explains */}
                         {hasKey != null && (hasKey || chatAvailable) && (
                             <KeyStatus hasKey={hasKey} theme={theme} />
+                        )}
+                        {loadError && (
+                            <Text
+                                style={[
+                                    styles.heroHint,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                Не удалось загрузить настройки — проверь сеть.
+                            </Text>
                         )}
                         {!chatAvailable && !hasKey && (
                             <Text

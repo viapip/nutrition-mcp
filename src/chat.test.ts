@@ -70,7 +70,6 @@ const dishRow = {
 test("runChatTurn executes a tool call and returns the final text", async () => {
     const sqlCalls = installFakeSql([
         { rows: [] }, // getUserTimezone → profile miss → UTC
-        { rows: [] }, // insertWater: idempotency lookup
         { rows: [waterRow] }, // insertWater: insert returning
     ]);
     const llmBodies = fakeLlm([
@@ -102,7 +101,7 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
     expect(reply.proposals).toEqual([]);
     expect(toolEvents).toEqual(["log_water"]);
     // insert got the parsed amount
-    expect(sqlCalls[2]!.values).toContain(300);
+    expect(sqlCalls[1]!.values).toContain(300);
     // second LLM call carries the tool result back
     const second = llmBodies[1] as { messages: { role: string }[] };
     expect(second.messages.at(-1)!.role).toBe("tool");
@@ -110,7 +109,6 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
 
 test("executeTool converts weight kg to grams and reports bad input", async () => {
     const calls = installFakeSql([
-        { rows: [] },
         {
             rows: [
                 {
@@ -131,7 +129,7 @@ test("executeTool converts weight kg to grams and reports bad input", async () =
         }),
     );
     expect(ok.logged).toBe(true);
-    expect(calls[1]!.values).toContain(78200);
+    expect(calls[0]!.values).toContain(78200);
 
     const bad = JSON.parse(
         await executeTool("u1", "log_weight", {
@@ -146,14 +144,14 @@ test("executeTool converts weight kg to grams and reports bad input", async () =
 
 test("executeTool threads a turn idempotency key into the write", async () => {
     const calls = installFakeSql([
-        { rows: [] }, // insertWater: idempotency lookup (miss)
         { rows: [waterRow] }, // insertWater: insert returning
     ]);
     const res = JSON.parse(
         await executeTool("u1", "log_water", { amount_ml: 300 }, "turn-key-1"),
     );
     expect(res.logged).toBe(true);
-    // The client key drives the dedupe lookup — a re-sent turn lands once.
+    // The client key is written on the insert; a re-sent turn dedups on the
+    // unique idempotency_key instead of double-writing.
     expect(calls[0]!.values).toContain("turn-key-1");
 });
 
@@ -227,7 +225,6 @@ test("executeTool rejects implausible weight", async () => {
 test("runChatTurn falls back to a canned reply when the LLM dies after a logged tool", async () => {
     installFakeSql([
         { rows: [] }, // getUserTimezone
-        { rows: [] }, // insertWater: idempotency lookup
         { rows: [waterRow] }, // insertWater: insert returning
     ]);
     // Only one scripted response: the second LLM call gets no message and throws.

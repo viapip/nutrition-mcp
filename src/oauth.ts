@@ -9,7 +9,6 @@ import {
     signInWithGoogleIdToken,
     storeRefreshToken,
     consumeRefreshToken,
-    registerClient,
 } from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { checkRateLimit } from "./rate-limit.js";
@@ -161,13 +160,10 @@ export function createOAuthRouter() {
         throw new Error("Missing OAUTH_CLIENT_ID or OAUTH_CLIENT_SECRET");
     }
 
-    // Dynamic client registration (required by MCP spec)
+    // Dynamic client registration (required by MCP spec). All clients share the
+    // one configured credential, so this just echoes it back.
     oauth.post("/register", async (c) => {
         const body = await c.req.json();
-
-        // Fire-and-forget: track who registers
-        registerClient(body.client_name ?? null, body.redirect_uris ?? []);
-
         return c.json({
             client_id: clientId,
             client_secret: clientSecret,
@@ -232,7 +228,6 @@ export function createOAuthRouter() {
         const sessionId = body.session_id as string;
         const email = (body.email as string)?.trim().toLowerCase();
         const password = body.password as string;
-        const action = body.action as string;
 
         if (loginRateLimited(c, email)) {
             return c.json({ error: "rate_limited" }, 429);
@@ -250,16 +245,34 @@ export function createOAuthRouter() {
 
         let userId: string;
         try {
-            // Try sign-in first; if user doesn't exist, sign them up
-            try {
-                userId = await signInUser(email, password);
-            } catch {
-                userId = await signUpUser(email, password);
+            userId = await signInUser(email, password);
+        } catch {
+            // Sign-in failed: either the email is free (create the account) or
+            // it exists with a wrong password. Gate new accounts behind the
+            // same invite code as /api/signup so OAuth can't bypass it.
+            const required = process.env.SIGNUP_CODE;
+            if (required && body.code !== required) {
+                return c.html(
+                    await renderLoginPage(sessionId, "Invalid invite code."),
+                    400,
+                );
             }
-        } catch (err: unknown) {
-            const message =
-                err instanceof Error ? err.message : "Authentication failed";
-            return c.html(await renderLoginPage(sessionId, message), 400);
+            try {
+                userId = await signUpUser(email, password);
+            } catch (err: unknown) {
+                const message =
+                    err instanceof Error
+                        ? err.message
+                        : "Authentication failed";
+                // A unique violation means the email is taken, so sign-in just
+                // failed on a wrong password — show a generic login error, never
+                // "already registered" (which would confirm the account exists).
+                const shown =
+                    message === "User already registered"
+                        ? "Invalid email or password."
+                        : message;
+                return c.html(await renderLoginPage(sessionId, shown), 400);
+            }
         }
 
         return finishAuthorization(c, sessionId, entry.session, userId);
@@ -395,8 +408,12 @@ export function createOAuthRouter() {
             );
 
             return finishAuthorization(c, sessionId, entry.session, userId);
-        } catch {
-            return renderError("Google sign-in failed. Please try again.");
+        } catch (err) {
+            const message =
+                err instanceof Error && err.message === "invite_required"
+                    ? "Registration is invite-only. Ask the owner for access."
+                    : "Google sign-in failed. Please try again.";
+            return renderError(message);
         }
     });
 

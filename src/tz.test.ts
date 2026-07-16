@@ -4,7 +4,6 @@ import {
     dateInTz,
     formatLocalDateTime,
     hourInTz,
-    dowInTz,
     zonedDayStartUtc,
     zonedNextDayStartUtc,
     shiftLocalDate,
@@ -29,10 +28,9 @@ test("formatLocalDateTime renders wall-clock time, normalizing hour 24 to 00", (
     ).toBe("2024-03-01 00:00:00");
 });
 
-test("hourInTz and dowInTz reflect local time", () => {
+test("hourInTz reflects local time", () => {
     expect(hourInTz("2024-03-01T07:00:00Z", "America/Los_Angeles")).toBe(23);
     expect(hourInTz("2024-03-01T08:00:00Z", "America/Los_Angeles")).toBe(0);
-    expect(dowInTz("2024-03-01T12:00:00Z", "UTC")).toBe(5); // Friday
 });
 
 test("zonedDayStartUtc handles DST transitions and fractional offsets", () => {

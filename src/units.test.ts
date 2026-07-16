@@ -6,7 +6,6 @@ import {
     isWeightUnit,
     pickWriteUnit,
     isPlausibleWeightGrams,
-    WEIGHT_UNITS,
 } from "./units.js";
 
 test("toGrams converts kg to integer grams", () => {
@@ -94,5 +93,5 @@ test("isWeightUnit guards kg/lb only", () => {
     expect(isWeightUnit("st")).toBe(false);
     expect(isWeightUnit("")).toBe(false);
     expect(isWeightUnit(undefined)).toBe(false);
-    for (const u of WEIGHT_UNITS) expect(isWeightUnit(u)).toBe(true);
+    for (const u of ["kg", "lb"] as const) expect(isWeightUnit(u)).toBe(true);
 });

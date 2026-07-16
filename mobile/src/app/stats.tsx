@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { CalorieColumns, WeightSparkline } from "@/components/charts";
+import { FadeIn, usePulse } from "@/components/motion";
 import {
     Colors,
     Fonts,
@@ -25,10 +26,12 @@ import {
 import {
     addMeal,
     getStats,
-    getToken,
+    newIdempotencyKey,
     type FrequentMeal,
     type StatsData,
 } from "@/lib/api";
+import { useRequireAuth } from "@/lib/auth";
+import { kgText, weightDeltaText } from "@/lib/format";
 import { successBuzz, tapBuzz } from "@/lib/haptics";
 
 type ThemeColors = (typeof Colors)["light"] | (typeof Colors)["dark"];
@@ -42,13 +45,6 @@ function pluralDays(n: number): string {
     return "дней";
 }
 
-function kgText(g: number): string {
-    return (g / 1000).toLocaleString("ru-RU", {
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
-    });
-}
-
 function litreText(ml: number): string {
     return (ml / 1000).toLocaleString("ru-RU", {
         minimumFractionDigits: 1,
@@ -60,62 +56,8 @@ function avgOf(xs: number[]): number {
     return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
 }
 
-/** Staggered entrance: fade + lift, once per mount (локальная копия из index). */
-function FadeIn({
-    delay,
-    children,
-}: {
-    delay: number;
-    children: React.ReactNode;
-}) {
-    const [anim] = useState(() => new Animated.Value(0));
-    useEffect(() => {
-        Animated.timing(anim, {
-            toValue: 1,
-            duration: 420,
-            delay,
-            useNativeDriver: true,
-        }).start();
-    }, [anim, delay]);
-    return (
-        <Animated.View
-            style={{
-                opacity: anim,
-                transform: [
-                    {
-                        translateY: anim.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [14, 0],
-                        }),
-                    },
-                ],
-            }}
-        >
-            {children}
-        </Animated.View>
-    );
-}
-
 function StatsSkeleton({ theme }: { theme: ThemeColors }) {
-    const [pulse] = useState(() => new Animated.Value(0.35));
-    useEffect(() => {
-        const loop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulse, {
-                    toValue: 0.75,
-                    duration: 700,
-                    useNativeDriver: true,
-                }),
-                Animated.timing(pulse, {
-                    toValue: 0.35,
-                    duration: 700,
-                    useNativeDriver: true,
-                }),
-            ]),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [pulse]);
+    const pulse = usePulse();
 
     const block = (extra: object) => [
         { backgroundColor: theme.surfaceElevated, opacity: pulse },
@@ -217,34 +159,32 @@ export default function StatsScreen() {
     const contentW =
         Math.min(width, MaxContentWidth) - Spacing.lg * 2 - Spacing.md * 2;
 
+    const { guard, onError } = useRequireAuth();
     const [stats, setStats] = useState<StatsData | null>(null);
     const [failed, setFailed] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [added, setAdded] = useState<Record<number, boolean>>({});
     const [repeatNote, setRepeatNote] = useState<string | null>(null);
+    // Ключ-на-действие по индексу частого: повтор после сбоя дедупится сервером.
+    const repeatKeys = useRef<Record<number, string>>({});
 
     const load = useCallback(async () => {
         try {
             const s = await getStats(30);
             setStats(s);
-            // Список частого мог перестроиться — пометки по индексам неверны.
+            // Список частого мог перестроиться — пометки/ключи по индексам неверны.
             setAdded({});
+            repeatKeys.current = {};
             setFailed(false);
         } catch (err) {
-            if (err instanceof Error && err.message === "unauthorized") {
-                router.replace("/login");
-            } else {
-                setFailed(true);
-            }
+            if (onError(err)) return;
+            setFailed(true);
         }
-    }, []);
+    }, [onError]);
 
     useEffect(() => {
-        getToken().then((t) => {
-            if (!t) router.replace("/login");
-            else void load();
-        });
-    }, [load]);
+        guard(() => void load());
+    }, [guard, load]);
 
     const refresh = useCallback(async () => {
         setRefreshing(true);
@@ -254,32 +194,38 @@ export default function StatsScreen() {
 
     // ref-замок по индексу: быстрый двойной тап иначе добавит два приёма.
     const inflight = useRef<Set<number>>(new Set());
-    const repeatMeal = useCallback(async (item: FrequentMeal, i: number) => {
-        if (inflight.current.has(i)) return;
-        inflight.current.add(i);
-        tapBuzz();
-        setRepeatNote(null);
-        try {
-            await addMeal({
-                description: item.description,
-                meal_type: item.meal_type ?? "snack",
-                calories: item.calories,
-                protein_g: item.protein_g,
-                carbs_g: item.carbs_g,
-                fat_g: item.fat_g,
-            });
-            successBuzz();
-            setAdded((prev) => ({ ...prev, [i]: true }));
-        } catch (err) {
-            if (err instanceof Error && err.message === "unauthorized") {
-                router.replace("/login");
-                return;
+    const repeatMeal = useCallback(
+        async (item: FrequentMeal, i: number) => {
+            if (inflight.current.has(i)) return;
+            inflight.current.add(i);
+            tapBuzz();
+            setRepeatNote(null);
+            // Ключ живёт до успеха; при успехе кнопка прячется (added[i]) —
+            // сброс не нужен, повтор после сбоя переиспользует тот же ключ.
+            const key = (repeatKeys.current[i] ??= newIdempotencyKey());
+            try {
+                await addMeal(
+                    {
+                        description: item.description,
+                        meal_type: item.meal_type ?? "snack",
+                        calories: item.calories,
+                        protein_g: item.protein_g,
+                        carbs_g: item.carbs_g,
+                        fat_g: item.fat_g,
+                    },
+                    key,
+                );
+                successBuzz();
+                setAdded((prev) => ({ ...prev, [i]: true }));
+            } catch (err) {
+                if (onError(err)) return;
+                setRepeatNote("Не добавилось — проверь сеть и попробуй ещё.");
+            } finally {
+                inflight.current.delete(i);
             }
-            setRepeatNote("Не добавилось — проверь сеть и попробуй ещё.");
-        } finally {
-            inflight.current.delete(i);
-        }
-    }, []);
+        },
+        [onError],
+    );
 
     if (!stats) {
         if (!failed) return <StatsSkeleton theme={theme} />;
@@ -351,6 +297,7 @@ export default function StatsScreen() {
         lastW != null && stats.weight.target_g != null
             ? lastW.weight_g - stats.weight.target_g
             : null;
+    const weightFootnote = weightDeltaText(weightDeltaG, toGoalG);
 
     // Стрик упирается в окно выборки — за его краем правды нет.
     const streakCapped = stats.streak.current >= windowLen;
@@ -708,7 +655,7 @@ export default function StatsScreen() {
                                     Запиши вес дважды — появится тренд.
                                 </Text>
                             )}
-                            {(weightDeltaG != null || toGoalG != null) && (
+                            {weightFootnote && (
                                 <Text
                                     style={[
                                         styles.footnote,
@@ -716,17 +663,7 @@ export default function StatsScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    {weightDeltaG != null &&
-                                        `${weightDeltaG > 0 ? "+" : "−"}${kgText(
-                                            Math.abs(weightDeltaG),
-                                        )} кг за 30 дней`}
-                                    {weightDeltaG != null &&
-                                        toGoalG != null &&
-                                        " · "}
-                                    {toGoalG != null &&
-                                        (Math.abs(toGoalG) < 100
-                                            ? "цель достигнута"
-                                            : `до цели ${kgText(Math.abs(toGoalG))} кг`)}
+                                    {weightFootnote}
                                 </Text>
                             )}
                         </View>

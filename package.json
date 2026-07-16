@@ -20,7 +20,8 @@
     "type": "module",
     "private": true,
     "devDependencies": {
-        "@types/bun": "latest"
+        "@types/bun": "latest",
+        "prettier": "^3.9.4"
     },
     "peerDependencies": {
         "typescript": "^5.9.3"
@@ -35,7 +36,6 @@
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "hono": "^4.12.28",
-        "jose": "^6.2.3",
-        "prettier": "^3.9.4"
+        "jose": "^6.2.3"
     }
 }

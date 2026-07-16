@@ -1,12 +1,13 @@
 import type { Context, Next } from "hono";
 import { getUserIdByToken } from "./db.js";
+import { getBaseUrl } from "./url.js";
 import { checkRateLimit } from "./rate-limit.js";
 
-function getBaseUrl(c: Context): string {
-    const proto = c.req.header("x-forwarded-proto") || "http";
-    const host = c.req.header("x-forwarded-host") || c.req.header("host");
-    if (host) return `${proto}://${host}`;
-    return new URL(c.req.url).origin;
+declare module "hono" {
+    interface ContextVariableMap {
+        userId: string;
+        accessToken: string;
+    }
 }
 
 export const authenticateBearer = async (c: Context, next: Next) => {

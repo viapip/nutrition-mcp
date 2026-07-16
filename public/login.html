@@ -89,17 +89,22 @@
                             autocomplete="current-password"
                         />
                     </div>
-                    <button
-                        type="submit"
-                        name="action"
-                        value="login"
-                        class="auth-btn auth-btn-secondary"
-                    >
+                    <div class="auth-field">
+                        <label for="code">Invite code (new accounts)</label>
+                        <input
+                            type="text"
+                            id="code"
+                            name="code"
+                            autocomplete="off"
+                        />
+                    </div>
+                    <button type="submit" class="auth-btn auth-btn-secondary">
                         Continue
                     </button>
                     <p class="auth-note">
-                        New here? Just enter your email and password — an
-                        account will be created automatically.
+                        Existing users: leave the invite code empty. New here?
+                        Enter your email, a password and your invite code to
+                        create an account.
                     </p>
                     <p class="auth-note">
                         After successful connection in your client, save your

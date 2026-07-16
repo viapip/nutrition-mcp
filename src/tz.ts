@@ -65,25 +65,6 @@ export function hourInTz(instant: Date | string, tz: string): number {
     return h === 24 ? 0 : h;
 }
 
-/** Local day-of-week (0=Sun..6=Sat) of an absolute instant in the given IANA timezone. */
-export function dowInTz(instant: Date | string, tz: string): number {
-    const d = instant instanceof Date ? instant : new Date(instant);
-    const name = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        weekday: "short",
-    }).format(d);
-    const map: Record<string, number> = {
-        Sun: 0,
-        Mon: 1,
-        Tue: 2,
-        Wed: 3,
-        Thu: 4,
-        Fri: 5,
-        Sat: 6,
-    };
-    return map[name] ?? 0;
-}
-
 /**
  * UTC instant corresponding to 00:00:00 local on `date` in `tz`.
  * Works correctly across DST transitions.

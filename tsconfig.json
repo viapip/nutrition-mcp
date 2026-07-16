@@ -1,4 +1,7 @@
 {
+    // Server + build scripts only; mobile/ has its own tsconfig and pulls in
+    // React Native globals that clash with Bun's (fetch/URLSearchParams).
+    "include": ["src", "scripts"],
     "compilerOptions": {
         // Environment setup & latest features
         "lib": ["ESNext"],

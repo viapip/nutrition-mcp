@@ -319,24 +319,10 @@ function mealRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("insertMeal idempotency", () => {
-    test("returns the existing row when the key was already used", async () => {
-        const calls = installFakeSql([{ rows: [mealRow()] }]);
-        const result = await insertMeal("user-1", {
-            description: "Soup",
-            meal_type: "lunch",
-        });
-        expect(result.deduplicated).toBe(true);
-        expect(result.meal.id).toBe("meal-1");
-        // Only the lookup ran — no insert was attempted.
-        expect(calls.length).toBe(1);
-        expect(calls[0]!.text).toContain("idempotency_key");
-    });
-
-    test("resolves a concurrent-retry 23505 to the winner's row", async () => {
+    test("dedups on a 23505 by returning the stored row", async () => {
         const calls = installFakeSql([
-            { rows: [] }, // pre-insert lookup: nothing yet
-            { error: { code: "23505" } }, // insert loses the race
-            { rows: [mealRow()] }, // re-fetch the winner
+            { error: { code: "23505" } }, // insert hits the unique key
+            { rows: [mealRow()] }, // re-fetch the stored row
         ]);
         const result = await insertMeal("user-1", {
             description: "Soup",
@@ -344,14 +330,14 @@ describe("insertMeal idempotency", () => {
         });
         expect(result.deduplicated).toBe(true);
         expect(result.meal.id).toBe("meal-1");
-        expect(calls.length).toBe(3);
+        // No pre-insert lookup: the insert runs first, dedup on the conflict.
+        expect(calls.length).toBe(2);
+        expect(calls[0]!.text.toLowerCase()).toContain("insert into meals");
+        expect(calls[1]!.text).toContain("idempotency_key");
     });
 
     test("normalizes driver types on the way out", async () => {
-        installFakeSql([
-            { rows: [] },
-            { rows: [mealRow({ idempotency_key: null })] },
-        ]);
+        installFakeSql([{ rows: [mealRow({ idempotency_key: null })] }]);
         const { meal, deduplicated } = await insertMeal("user-1", {
             description: "Soup",
             meal_type: "lunch",
@@ -363,10 +349,7 @@ describe("insertMeal idempotency", () => {
     });
 
     test("other insert errors are not swallowed", async () => {
-        installFakeSql([
-            { rows: [] },
-            { error: new Error("connection refused") },
-        ]);
+        installFakeSql([{ error: new Error("connection refused") }]);
         expect(
             insertMeal("user-1", { description: "Soup", meal_type: "lunch" }),
         ).rejects.toThrow("Failed to insert meal");

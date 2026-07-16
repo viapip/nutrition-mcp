@@ -35,13 +35,14 @@ import {
 import {
     addMeal,
     getSettings,
-    getToken,
+    isUnauthorized,
     newIdempotencyKey,
     sendChat,
     type ChatMessage,
     type ChatPart,
     type MealFields,
 } from "@/lib/api";
+import { useRequireAuth } from "@/lib/auth";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 /** Карточка «записать?» из propose_meal; resolved и idem живут только на
@@ -450,6 +451,7 @@ function TypingDots({ theme }: { theme: Theme }) {
 export default function ChatScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
+    const { guard, onError } = useRequireAuth();
     // Deep-link из виджета/quick actions: "camera" — сразу открыть съёмку,
     // "text" — сфокусировать поле ввода.
     const { compose } = useLocalSearchParams<{ compose?: string }>();
@@ -469,6 +471,7 @@ export default function ChatScreen() {
     const [copied, setCopied] = useState(false);
     const [viewerUri, setViewerUri] = useState<string | null>(null);
     const atBottom = useRef(true);
+    const pendingClaimed = useRef(false);
     const inputRef = useRef<TextInput>(null);
     const scrollRef = useRef<ScrollView>(null);
     const abortRef = useRef<AbortController | null>(null);
@@ -479,33 +482,38 @@ export default function ChatScreen() {
     useFocusEffect(
         useCallback(() => {
             // Виджет может открыть чат до логина — гейтим по токену, как дашборд.
-            getToken().then((t) => {
-                if (!t) {
-                    router.replace("/login");
-                    return;
-                }
+            guard(() => {
                 getSettings()
                     .then((s) =>
                         setNeedsKey(!s.chat_available && !s.has_llm_key),
                     )
                     .catch(() => {});
             });
-        }, []),
+        }, [guard]),
     );
 
     // Restore the conversation, then mirror every change back to storage.
     useEffect(() => {
         AsyncStorage.getItem(CHAT_KEY)
             .then((raw) => {
-                const restored = raw ? (JSON.parse(raw) as Msg[]) : [];
+                let restored: Msg[] = [];
+                if (raw) {
+                    try {
+                        restored = JSON.parse(raw) as Msg[];
+                    } catch {
+                        // Битый JSON не восстановить — стираем и включаем
+                        // зеркало заново, иначе новые сообщения не сохранятся.
+                        void AsyncStorage.removeItem(CHAT_KEY);
+                    }
+                }
                 if (restored.length) {
                     // The user may have typed before hydration finished —
                     // never clobber a live conversation with the stored one.
                     setMessages((cur) => (cur.length ? cur : restored));
                 }
                 void sweepOrphanPhotos(restored);
-                // Зеркало — только после успешного чтения: иначе сбой чтения
-                // затёр бы сохранённую историю пустым массивом
+                // Зеркало — только после успешного чтения: иначе сбой самого
+                // AsyncStorage затёр бы сохранённую историю пустым массивом
                 setHydrated(true);
             })
             .catch(() => {});
@@ -588,9 +596,13 @@ export default function ChatScreen() {
             );
             base64 = shrunk.base64 ?? undefined;
         } catch {
-            // manipulation can fail on exotic sources — send as-is below
+            // manipulation can fail on exotic sources — сообщаем ниже
         }
-        if (!base64) return;
+        if (!base64) {
+            // Фото не обработалось — не роняем молча, говорим пользователю.
+            notify("Не вышло обработать фото", "Попробуй другой снимок.");
+            return;
+        }
         if (base64.length + 30 > MAX_IMAGE_CHARS) {
             notify("Фото слишком большое", "Выбери поменьше или обрежь.");
             return;
@@ -612,15 +624,22 @@ export default function ChatScreen() {
         }
     };
 
-    // Android may destroy the activity while the camera is open; recover
-    // the shot on remount instead of silently losing it.
+    // Android may destroy the activity while the camera is open; recover the
+    // shot on remount. Оба пути (remount-восстановление и compose=camera)
+    // претендуют на pending — claim'им его максимум один раз.
+    const claimPendingShot = async () => {
+        if (Platform.OS !== "android" || pendingClaimed.current) return null;
+        pendingClaimed.current = true;
+        const r = await ImagePicker.getPendingResultAsync();
+        return r && !("code" in r) && !r.canceled ? r : null;
+    };
+
     useEffect(() => {
-        if (Platform.OS !== "android") return;
-        void ImagePicker.getPendingResultAsync().then((r) => {
-            if (r && !("code" in r) && !r.canceled) {
-                void acceptImage(r.assets?.[0]);
-            }
+        if (compose === "camera") return;
+        void claimPendingShot().then((r) => {
+            if (r) void acceptImage(r.assets?.[0]);
         });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- один раз на маунт
     }, []);
 
     const pickImage = async (fromCamera: boolean) => {
@@ -637,6 +656,17 @@ export default function ChatScreen() {
         await acceptImage(result.assets?.[0]);
     };
 
+    // compose=camera на маунте: если Activity убили с открытой камерой, кадр
+    // ждёт в pending — забираем его вместо повторного запуска съёмки.
+    const openCameraOrRecover = async () => {
+        const pending = await claimPendingShot();
+        if (pending) {
+            await acceptImage(pending.assets?.[0]);
+            return;
+        }
+        await pickImage(Platform.OS !== "web");
+    };
+
     const attach = () => {
         if (Platform.OS === "web") {
             void pickImage(false);
@@ -649,18 +679,25 @@ export default function ChatScreen() {
         ]);
     };
 
-    // Deep-link отрабатывает один раз на открытие (ref-замок), не на ре-рендер.
-    const composeHandled = useRef(false);
+    // Deep-link отрабатывает по ЗНАЧЕНИЮ compose и вычищает параметр, чтобы
+    // повторный тап той же кнопки виджета при открытом чате снова сработал.
+    const composeHandled = useRef<string | undefined>(undefined);
     useEffect(() => {
-        if (composeHandled.current || !compose) return;
-        composeHandled.current = true;
+        if (!compose) {
+            composeHandled.current = undefined;
+            return;
+        }
+        if (compose === composeHandled.current) return;
+        composeHandled.current = compose;
+        // Съесть параметр — иначе повтор того же значения не перезапустит эффект.
+        router.setParams({ compose: "" });
         if (compose === "camera") {
-            void pickImage(Platform.OS !== "web");
+            void openCameraOrRecover();
         } else if (compose === "text") {
             // Клавиатуре нужен тик после монтирования, чтобы поднять поле.
             setTimeout(() => inputRef.current?.focus(), 250);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- pickImage не мемоизирован; ref-замок выше даёт ровно один запуск
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- openCamera/pickImage не мемоизированы; сброс по значению даёт один запуск на значение
     }, [compose]);
 
     // Один ход ассистента поверх готовой истории; и send, и retry идут сюда.
@@ -704,7 +741,7 @@ export default function ChatScreen() {
                     ...cur,
                     stamped(
                         "assistant",
-                        err instanceof Error && err.message === "unauthorized"
+                        isUnauthorized(err)
                             ? "Сессия истекла — войди заново."
                             : err instanceof Error &&
                                 err.message === "chat_not_configured"
@@ -805,10 +842,7 @@ export default function ChatScreen() {
             successBuzz();
             markProposal(mi, pi, "saved");
         } catch (err) {
-            if (err instanceof Error && err.message === "unauthorized") {
-                router.replace("/login");
-                return;
-            }
+            if (onError(err)) return;
             notify("Не записалось", "Проверь сеть и попробуй ещё раз.");
         } finally {
             setSavingCard(null);

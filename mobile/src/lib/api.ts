@@ -175,6 +175,11 @@ async function clearIfStale(sentToken: string | null): Promise<void> {
     if (sentToken && (await getToken()) === sentToken) await setToken(null);
 }
 
+/** True для 401-часового, который бросают request()/sendChat(). */
+export function isUnauthorized(err: unknown): boolean {
+    return err instanceof Error && err.message === "unauthorized";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const token = await getToken();
     const res = await fetch(`${API_URL}${path}`, {
@@ -246,15 +251,26 @@ export async function signup(
         await setToken("mock-token");
         return;
     }
-    const { token } = await request<{ token: string }>("/api/signup", {
-        method: "POST",
-        body: JSON.stringify({
-            email,
-            password,
-            code,
-            timezone: deviceTimezone(),
-        }),
-    });
+    // Как login: 429/offline различаем от отказа, а не отдаём общий
+    // «проверь инвайт-код» на любой сбой.
+    let res: Response;
+    try {
+        res = await fetch(`${API_URL}/api/signup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email,
+                password,
+                code,
+                timezone: deviceTimezone(),
+            }),
+        });
+    } catch {
+        throw new LoginError("network");
+    }
+    if (res.status === 429) throw new LoginError("rate_limited");
+    if (!res.ok) throw new LoginError("invalid");
+    const { token } = (await res.json()) as { token: string };
     await setToken(token);
 }
 
@@ -438,7 +454,10 @@ export async function removeMeal(id: string): Promise<void> {
     await request(`/api/meals/${id}`, { method: "DELETE" });
 }
 
-export async function addWater(amountMl: number): Promise<void> {
+export async function addWater(
+    amountMl: number,
+    idempotencyKey?: string,
+): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.water.total_ml += amountMl;
         MOCK_DASHBOARD.water.entries.push({
@@ -450,7 +469,10 @@ export async function addWater(amountMl: number): Promise<void> {
     }
     await request("/api/water", {
         method: "POST",
-        body: JSON.stringify({ amount_ml: amountMl }),
+        body: JSON.stringify({
+            amount_ml: amountMl,
+            idempotency_key: idempotencyKey,
+        }),
     });
 }
 
@@ -466,14 +488,20 @@ export async function removeWater(id: string): Promise<void> {
     await request(`/api/water/${id}`, { method: "DELETE" });
 }
 
-export async function addWeight(kg: number): Promise<void> {
+export async function addWeight(
+    kg: number,
+    idempotencyKey?: string,
+): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.weight.current_g = Math.round(kg * 1000);
         return;
     }
     await request("/api/weight", {
         method: "POST",
-        body: JSON.stringify({ weight_kg: kg }),
+        body: JSON.stringify({
+            weight_kg: kg,
+            idempotency_key: idempotencyKey,
+        }),
     });
 }
 
@@ -526,10 +554,7 @@ export async function getDishes(): Promise<Dish[]> {
 }
 
 /** Дубликат по имени сервер обновляет на месте — «запомнить» повторно не плодит копии. */
-export async function addDish(
-    dish: DishInput,
-    idempotencyKey?: string,
-): Promise<Dish> {
+export async function addDish(dish: DishInput): Promise<Dish> {
     if (MOCK) {
         const name = dish.name.trim();
         const existing = MOCK_DISHES.find(
@@ -550,7 +575,7 @@ export async function addDish(
     }
     const { dish: saved } = await request<{ dish: Dish }>("/api/dishes", {
         method: "POST",
-        body: JSON.stringify({ ...dish, idempotency_key: idempotencyKey }),
+        body: JSON.stringify(dish),
     });
     return saved;
 }

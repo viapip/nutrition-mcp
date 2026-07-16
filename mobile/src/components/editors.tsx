@@ -1,4 +1,3 @@
-import { router } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
@@ -31,6 +30,7 @@ import {
     addWeight,
     getDishes,
     getStats,
+    newIdempotencyKey,
     patchMeal,
     patchWeight,
     removeDish,
@@ -43,6 +43,7 @@ import {
     type MealRow,
     type MealType,
 } from "@/lib/api";
+import { useRequireAuth } from "@/lib/auth";
 import { tapBuzz } from "@/lib/haptics";
 
 const MEAL_TYPES: { key: MealType; label: string }[] = [
@@ -324,18 +325,22 @@ function MealForm({
     const [mealType, setMealType] = useState<MealType>(
         (meal?.meal_type as MealType) ?? mealTypeNow(),
     );
+    const { onError } = useRequireAuth();
     const [calories, setCalories] = useState(numText(meal?.calories));
     const [protein, setProtein] = useState(numText(meal?.protein_g));
     const [carbs, setCarbs] = useState(numText(meal?.carbs_g));
     const [fat, setFat] = useState(numText(meal?.fat_g));
     const [busy, setBusy] = useState(false);
-    const [error, setError] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
     const [dishes, setDishes] = useState<Dish[]>([]);
     const [remember, setRemember] = useState(false);
     // ref-замок: busy — async-стейт, быстрый двойной тап проскакивает до
     // ре-рендера и шлёт две записи.
     const lock = useRef(false);
+    // Ключ на запись приёма — переживает ретрай в открытой форме (форма
+    // ремоунтится на каждое открытие, так что ключ свежий на новый приём).
+    const saveKey = useRef<{ sig: string; key: string } | null>(null);
 
     // Форма ремоунтится на каждое открытие — частое тянем один раз, только
     // для нового приёма; сбой сети просто оставляет форму без чипов.
@@ -348,9 +353,7 @@ function MealForm({
             })
             .catch((err: unknown) => {
                 // 401 уже стёр токен — оставлять юзера в форме бессмысленно.
-                if (err instanceof Error && err.message === "unauthorized") {
-                    router.replace("/login");
-                }
+                onError(err);
             });
         // Свой каталог: ошибку глотаем — редактор важнее чипов.
         getDishes()
@@ -361,7 +364,7 @@ function MealForm({
         return () => {
             alive = false;
         };
-    }, [meal]);
+    }, [meal, onError]);
 
     const fillFrom = (f: FrequentMeal) => {
         tapBuzz();
@@ -383,11 +386,21 @@ function MealForm({
         setFat(numText(d.fat_g));
     };
 
-    // Long-press по чипу — убрать блюдо из каталога (оптимистично).
+    // Long-press по чипу — убрать блюдо из каталога (оптимистично, с откатом).
     const forgetDish = (d: Dish) => {
         confirmDelete(`Убрать «${d.name}» из моих блюд?`, () => {
             setDishes((cur) => cur.filter((x) => x.id !== d.id));
-            void removeDish(d.id).catch(() => {});
+            removeDish(d.id).catch((err) => {
+                if (onError(err)) return;
+                // Сервер отказал — возвращаем блюдо на место (порядок по имени).
+                setDishes((cur) =>
+                    cur.some((x) => x.id === d.id)
+                        ? cur
+                        : [...cur, d].sort((a, b) =>
+                              a.name.localeCompare(b.name),
+                          ),
+                );
+            });
         });
     };
 
@@ -402,7 +415,7 @@ function MealForm({
             !description.trim() ||
             Object.values(nums).some((v) => Number.isNaN(v))
         ) {
-            setError(true);
+            setError("Проверь описание и числа, потом попробуй снова.");
             return;
         }
         if (lock.current) return;
@@ -414,8 +427,16 @@ function MealForm({
                 meal_type: mealType,
                 ...nums,
             };
-            if (meal) await patchMeal(meal.id, fields);
-            else await addMeal(fields);
+            if (meal) {
+                await patchMeal(meal.id, fields);
+            } else {
+                // Ключ привязан к payload: ретрай тех же данных дедупится
+                // сервером, а исправленные перед повтором — пишутся заново.
+                const sig = JSON.stringify(fields);
+                if (saveKey.current?.sig !== sig)
+                    saveKey.current = { sig, key: newIdempotencyKey() };
+                await addMeal(fields, saveKey.current.key);
+            }
             // Приём записан — блюдо в каталог фоном; его сбой не рушит сохранение.
             if (remember) {
                 void addDish({
@@ -425,8 +446,9 @@ function MealForm({
                 }).catch(() => {});
             }
             onDone();
-        } catch {
-            setError(true);
+        } catch (err) {
+            if (onError(err)) return;
+            setError("Не удалось сохранить — проверь сеть и попробуй ещё.");
         } finally {
             lock.current = false;
             setBusy(false);
@@ -440,9 +462,10 @@ function MealForm({
         try {
             await removeMeal(meal.id);
             onDone();
-        } catch {
-            // раньше падало молча — теперь хотя бы видно, что не удалилось
-            setError(true);
+        } catch (err) {
+            if (onError(err)) return;
+            // Отдельный текст: удаление не про «проверь числа».
+            setError("Не удалось удалить — проверь сеть и попробуй ещё.");
         } finally {
             lock.current = false;
             setBusy(false);
@@ -656,7 +679,7 @@ function MealForm({
             </Pressable>
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
-                    Проверь описание и числа, потом попробуй снова.
+                    {error}
                 </Text>
             )}
             <SheetActions
@@ -707,28 +730,38 @@ function WeightForm({
     onDone: () => void;
     theme: Theme;
 }) {
+    const { onError } = useRequireAuth();
     const [kg, setKg] = useState(
         entry ? (entry.weight_g / 1000).toFixed(1) : "",
     );
     const [busy, setBusy] = useState(false);
-    const [error, setError] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const lock = useRef(false);
+    // Ключ на взвешивание — переживает ретрай в открытой форме.
+    const saveKey = useRef<{ sig: string; key: string } | null>(null);
 
     const save = async () => {
         const v = parseNum(kg);
         if (v == null || Number.isNaN(v)) {
-            setError(true);
+            setError("Введи вес вида 78.2.");
             return;
         }
         if (lock.current) return;
         lock.current = true;
         setBusy(true);
         try {
-            if (entry) await patchWeight(entry.id, v);
-            else await addWeight(v);
+            if (entry) {
+                await patchWeight(entry.id, v);
+            } else {
+                const sig = JSON.stringify(v);
+                if (saveKey.current?.sig !== sig)
+                    saveKey.current = { sig, key: newIdempotencyKey() };
+                await addWeight(v, saveKey.current.key);
+            }
             onDone();
-        } catch {
-            setError(true);
+        } catch (err) {
+            if (onError(err)) return;
+            setError("Не удалось сохранить — проверь сеть и попробуй ещё.");
         } finally {
             lock.current = false;
             setBusy(false);
@@ -742,8 +775,9 @@ function WeightForm({
         try {
             await removeWeight(entry.id);
             onDone();
-        } catch {
-            setError(true);
+        } catch (err) {
+            if (onError(err)) return;
+            setError("Не удалось удалить — проверь сеть и попробуй ещё.");
         } finally {
             lock.current = false;
             setBusy(false);
@@ -762,7 +796,7 @@ function WeightForm({
             />
             {error && (
                 <Text style={[styles.error, { color: theme.danger }]}>
-                    Введи вес вида 78.2.
+                    {error}
                 </Text>
             )}
             <SheetActions
@@ -820,6 +854,7 @@ function GoalsForm({
     const [target, setTarget] = useState(numText(initial.target_weight_kg));
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(false);
+    const { onError } = useRequireAuth();
 
     const save = async () => {
         const goals: GoalsInput = {
@@ -838,7 +873,8 @@ function GoalsForm({
         try {
             await saveGoals(goals);
             onDone();
-        } catch {
+        } catch (err) {
+            if (onError(err)) return;
             setError(true);
         } finally {
             setBusy(false);

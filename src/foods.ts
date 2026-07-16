@@ -67,6 +67,13 @@ interface OFFProduct {
     nutriments?: Record<string, unknown>;
 }
 
+// Open Food Facts names/brands are free-form community input: collapse any
+// whitespace (including newlines) and cap the length before the value lands in
+// a tool result.
+function cleanField(raw: string): string {
+    return raw.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
 // Normalize an OFF product into our shape. Prefer per-serving values when the
 // product declares a serving size and a per-serving energy; otherwise fall back
 // to the always-present per-100g basis and label it as such.
@@ -78,9 +85,9 @@ function normalizeOFFProduct(product: OFFProduct, barcode: string): FoodResult {
         hasServing ? num(n[servingKey]) : num(n[hundredKey]);
 
     return {
-        name: product.product_name?.trim() || `Product ${barcode}`,
-        brand: product.brands?.split(",")[0]?.trim() || null,
-        serving: hasServing ? product.serving_size!.trim() : "100 g",
+        name: cleanField(product.product_name ?? "") || `Product ${barcode}`,
+        brand: cleanField(product.brands?.split(",")[0] ?? "") || null,
+        serving: hasServing ? cleanField(product.serving_size!) : "100 g",
         calories: pick("energy-kcal_serving", "energy-kcal_100g"),
         protein_g: pick("proteins_serving", "proteins_100g"),
         carbs_g: pick("carbohydrates_serving", "carbohydrates_100g"),

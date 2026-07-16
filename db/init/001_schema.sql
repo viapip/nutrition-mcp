@@ -65,9 +65,8 @@ create table meals (
     idempotency_key text
 );
 
-create index idx_meals_user_id on meals (user_id);
-
-create index idx_meals_logged_at on meals (logged_at);
+-- Covers "where user_id = ? and logged_at [range] order by logged_at".
+create index idx_meals_user_logged_at on meals (user_id, logged_at);
 
 -- Retry-safe writes: a second insert with the same (user_id, idempotency_key)
 -- hits 23505 and the app returns the original row instead of duplicating.
@@ -93,8 +92,6 @@ create table dishes (
     created_at timestamptz not null default now()
 );
 
-create index idx_dishes_user_id on dishes (user_id);
-
 -- One saved dish per name (case-insensitive) so "remember this" upserts
 -- instead of piling up duplicates.
 create unique index uniq_dishes_user_lower_name on dishes (user_id, lower(name));
@@ -110,9 +107,8 @@ create table water_log (
     idempotency_key text
 );
 
-create index idx_water_log_user_id on water_log (user_id);
-
-create index idx_water_log_logged_at on water_log (logged_at);
+-- Covers "where user_id = ? and logged_at [range] order by logged_at".
+create index idx_water_log_user_logged_at on water_log (user_id, logged_at);
 
 create unique index uniq_water_log_user_idem on water_log (user_id, idempotency_key)
 where
@@ -130,9 +126,8 @@ create table weight_log (
     idempotency_key text
 );
 
-create index idx_weight_log_user_id on weight_log (user_id);
-
-create index idx_weight_log_logged_at on weight_log (logged_at);
+-- Covers "where user_id = ? and logged_at [range] order by logged_at".
+create index idx_weight_log_user_logged_at on weight_log (user_id, logged_at);
 
 create unique index uniq_weight_log_user_idem on weight_log (user_id, idempotency_key)
 where
@@ -170,18 +165,9 @@ create table auth_codes (
 
 create index idx_auth_codes_expires_at on auth_codes (expires_at);
 
--- Telemetry: who registers a client (fire-and-forget insert).
-create table registered_clients (
-    id uuid primary key default gen_random_uuid(),
-    client_name text,
-    redirect_uris jsonb not null default '[]'::jsonb,
-    registered_at timestamptz default now()
-);
-
 -- Tool call analytics (duration, success/failure, error category).
--- Deliberately no FK to users: the delete_account tool's own analytics row is
--- written after the user is gone, and imported telemetry may reference
--- since-deleted users. deleteAllUserData clears it explicitly.
+-- Deliberately no FK to users: imported telemetry may reference since-deleted
+-- users; deleteAllUserData clears a user's rows explicitly on account deletion.
 create table tool_analytics (
     id uuid primary key default gen_random_uuid(),
     user_id uuid not null,
@@ -194,8 +180,6 @@ create table tool_analytics (
     invoked_at timestamptz not null default now(),
     created_at timestamptz default now()
 );
-
-create index idx_tool_analytics_user_id on tool_analytics (user_id);
 
 create index idx_tool_analytics_tool_name on tool_analytics (tool_name);
 

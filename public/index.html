@@ -105,7 +105,7 @@
                         "name": "Can I self-host it?",
                         "acceptedAnswer": {
                             "@type": "Answer",
-                            "text": "Yes. Nutrition MCP is open source (MIT). You can run your own instance with your own Supabase project — the GitHub repository includes a full self-hosting guide and a Dockerfile."
+                            "text": "Yes. Nutrition MCP is open source (MIT). You can run your own instance with the bundled PostgreSQL (docker-compose) — the GitHub repository includes a full self-hosting guide and a Dockerfile."
                         }
                     },
                     {
@@ -1607,9 +1607,10 @@
                             <summary>Can I self-host it?</summary>
                             <p>
                                 Yes. Nutrition MCP is open source (MIT). You can
-                                run your own instance with your own Supabase
-                                project — the repository includes a full
-                                self-hosting guide and a Dockerfile.
+                                run your own instance with the bundled
+                                PostgreSQL (docker-compose) — the repository
+                                includes a full self-hosting guide and a
+                                Dockerfile.
                             </p>
                         </details>
                         <details>
@@ -1734,9 +1735,9 @@
                                 ta.style.left = "-9999px";
                                 document.body.appendChild(ta);
                                 ta.select();
-                                document.execCommand("copy");
+                                var copied = document.execCommand("copy");
                                 document.body.removeChild(ta);
-                                ok();
+                                if (copied) ok();
                             } catch (e) {}
                         }
                         if (
@@ -1767,7 +1768,13 @@
                     }).format(Math.round(n));
                 }
                 function fmtKg(n) {
-                    return fmtInt(n) + " kg";
+                    // Keep a decimal so sub-kg totals stay honest (500 g → "0.5 kg", not "1 kg").
+                    return (
+                        new Intl.NumberFormat("en-US", {
+                            minimumFractionDigits: 1,
+                            maximumFractionDigits: 1,
+                        }).format(n) + " kg"
+                    );
                 }
                 var FORMATS = {
                     food_logs: {
@@ -1971,8 +1978,17 @@
                         idx = (n + slides.length) % slides.length;
                         track.style.transform =
                             "translateX(" + -idx * 100 + "%)";
+                        slides.forEach(function (s, k) {
+                            s.setAttribute(
+                                "aria-hidden",
+                                k === idx ? "false" : "true",
+                            );
+                        });
                         dots.forEach(function (d, k) {
-                            d.classList.toggle("active", k === idx);
+                            var active = k === idx;
+                            d.classList.toggle("active", active);
+                            if (active) d.setAttribute("aria-current", "true");
+                            else d.removeAttribute("aria-current");
                         });
                         play(slides[idx]);
                     }

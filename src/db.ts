@@ -241,6 +241,11 @@ export async function resolveGoogleUser(
         throw new Error("Google sign-in failed");
     }
 
+    // Invite gate: when SIGNUP_CODE is set, brand-new accounts must come
+    // through the code-gated signup paths — Google must not auto-provision
+    // strangers. Existing accounts (matched by sub/email above) still sign in.
+    if (process.env.SIGNUP_CODE) throw new Error("invite_required");
+
     try {
         const [created] = await db`
             insert into users (email, google_sub, email_verified)
@@ -301,7 +306,7 @@ export interface MealInput {
     carbs_g?: number | null;
     fat_g?: number | null;
     logged_at?: string;
-    notes?: string;
+    notes?: string | null;
     idempotency_key?: string;
 }
 
@@ -350,11 +355,6 @@ export async function insertMeal(
             loggedAt,
         ]);
 
-    const [existing] = await db`
-        select * from meals
-        where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
-    if (existing) return { meal: mapMeal(existing), deduplicated: true };
-
     try {
         const [row] = await db`
             insert into meals (
@@ -375,8 +375,9 @@ export async function insertMeal(
             returning *`;
         return { meal: mapMeal(row), deduplicated: false };
     } catch (err) {
-        // Concurrent retry with the same idempotency key — the other request
-        // already inserted the row. Fetch and return it instead of failing.
+        // The idempotency key already exists (a retry, or a concurrent insert
+        // that won the race) — return the stored row as a dedup instead of
+        // failing. This is the sole dedup path: no pre-insert lookup.
         if (isUniqueViolation(err)) {
             const [row] = await db`
                 select * from meals
@@ -834,11 +835,6 @@ export async function insertWater(
         input.idempotency_key ??
         deriveIdempotencyKey([userId, input.amount_ml, input.notes, loggedAt]);
 
-    const [existing] = await db`
-        select * from water_log
-        where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
-    if (existing) return { entry: mapWater(existing), deduplicated: true };
-
     try {
         const [row] = await db`
             insert into water_log (
@@ -958,11 +954,6 @@ export async function insertWeight(
     const idempotencyKey =
         input.idempotency_key ??
         deriveIdempotencyKey([userId, input.weight_g, input.notes, loggedAt]);
-
-    const [existing] = await db`
-        select * from weight_log
-        where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
-    if (existing) return { entry: mapWeight(existing), deduplicated: true };
 
     try {
         const [row] = await db`
@@ -1383,21 +1374,4 @@ export async function getLandingStats(): Promise<LandingStats> {
     } catch (err) {
         throw new Error(`Failed to get landing stats: ${errMsg(err)}`);
     }
-}
-
-// ---------- Registered clients ----------
-
-export function registerClient(
-    clientName: string | null,
-    redirectUris: string[],
-): void {
-    const db = getSql();
-    db`
-        insert into registered_clients (client_name, redirect_uris)
-        values (${clientName}, ${JSON.stringify(redirectUris)}::jsonb)`.then(
-        () => {},
-        (err: unknown) => {
-            console.warn("Failed to persist client registration:", errMsg(err));
-        },
-    );
 }

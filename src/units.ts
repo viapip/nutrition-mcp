@@ -4,8 +4,6 @@
 
 export type WeightUnit = "kg" | "lb";
 
-export const WEIGHT_UNITS: readonly WeightUnit[] = ["kg", "lb"];
-
 const GRAMS_PER_KG = 1000;
 const GRAMS_PER_LB = 453.59237; // international avoirdupois pound (exact)
 
