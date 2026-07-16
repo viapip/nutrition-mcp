@@ -353,7 +353,11 @@ export async function sendChat(
             Accept: "text/event-stream",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ messages, turn_key: turnKey }),
+        body: JSON.stringify({
+            messages,
+            turn_key: turnKey,
+            stream_tokens: true,
+        }),
         signal,
     });
     if (res.status === 401) {

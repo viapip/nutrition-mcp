@@ -967,9 +967,11 @@ export function createChatRouter() {
         };
         let history: ChatMessage[];
         let turnKey: string | undefined;
+        let streamTokens = false;
         try {
             const body = await c.req.json();
             history = body.messages;
+            streamTokens = body.stream_tokens === true;
             // Client-stable per user message; a retried turn reuses it so the
             // log_* tools dedupe instead of double-writing.
             if (
@@ -1038,14 +1040,21 @@ export function createChatRouter() {
                         // and running tools for an answer nobody will see.
                         c.req.raw.signal,
                         turnKey,
-                        (text) =>
-                            stream.writeSSE({
-                                data: JSON.stringify({ type: "delta", text }),
-                            }),
-                        () =>
-                            stream.writeSSE({
-                                data: JSON.stringify({ type: "reset" }),
-                            }),
+                        streamTokens
+                            ? (text) =>
+                                  stream.writeSSE({
+                                      data: JSON.stringify({
+                                          type: "delta",
+                                          text,
+                                      }),
+                                  })
+                            : undefined,
+                        streamTokens
+                            ? () =>
+                                  stream.writeSSE({
+                                      data: JSON.stringify({ type: "reset" }),
+                                  })
+                            : undefined,
                         profile?.timezone ?? "UTC",
                     );
                     await stream.writeSSE({

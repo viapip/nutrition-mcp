@@ -95,6 +95,84 @@ test("SSE chat auth failures use the event contract", async () => {
     );
 });
 
+const chatProfile = {
+    user_id: "u1",
+    timezone: "UTC",
+    preferred_weight_unit: null,
+    llm_api_key: "test-key",
+    created_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-01T00:00:00.000Z",
+};
+
+function installChatRouteSql() {
+    installFakeSql([{ rows: [{ user_id: "u1" }] }, { rows: [chatProfile] }]);
+}
+
+async function requestSseChat(
+    streamTokens: unknown,
+    responses: unknown[][],
+): Promise<string> {
+    installChatRouteSql();
+    fakeLlmStreams(responses);
+    const body: Record<string, unknown> = {
+        messages: [{ role: "user", content: "hello" }],
+    };
+    if (streamTokens !== undefined) body.stream_tokens = streamTokens;
+    const response = await createChatRouter().request(
+        "http://localhost/api/chat",
+        {
+            method: "POST",
+            headers: {
+                accept: "text/event-stream",
+                authorization: "Bearer token",
+                "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+        },
+    );
+    return response.text();
+}
+
+test("SSE chat emits token deltas and reset only when stream_tokens is true", async () => {
+    const sse = await requestSseChat(true, [
+        [{ choices: [{ delta: { content: "I proposed a card." } }] }],
+        [
+            { choices: [{ delta: { content: "Hello " } }] },
+            { choices: [{ delta: { content: "world." } }] },
+        ],
+    ]);
+    expect(sse).toContain('data: {"type":"delta","text":"I proposed a card."}');
+    expect(sse).toContain('data: {"type":"reset"}');
+    expect(sse).toContain('data: {"type":"delta","text":"Hello "}');
+    expect(sse).toContain('data: {"type":"delta","text":"world."}');
+    expect(sse).toContain(
+        'data: {"type":"done","message":"Hello world.","proposals":[]}',
+    );
+});
+
+test("SSE chat defaults to legacy events and keeps the full done message", async () => {
+    const sse = await requestSseChat(undefined, [
+        [{ choices: [{ delta: { content: "I proposed a card." } }] }],
+        [{ choices: [{ delta: { content: "Plain answer." } }] }],
+    ]);
+    expect(sse).not.toContain('"type":"delta"');
+    expect(sse).not.toContain('"type":"reset"');
+    expect(sse).toContain(
+        'data: {"type":"done","message":"Plain answer.","proposals":[]}',
+    );
+});
+
+test("SSE chat ignores non-boolean stream_tokens", async () => {
+    const sse = await requestSseChat("true", [
+        [{ choices: [{ delta: { content: "Plain answer." } }] }],
+    ]);
+    expect(sse).not.toContain('"type":"delta"');
+    expect(sse).not.toContain('"type":"reset"');
+    expect(sse).toContain(
+        'data: {"type":"done","message":"Plain answer.","proposals":[]}',
+    );
+});
+
 const waterRow = {
     id: "w1",
     user_id: "u1",
