@@ -1,11 +1,10 @@
 import { test, expect } from "bun:test";
-import crypto from "node:crypto";
 import { renderLoginPage } from "./oauth.js";
 
 // Guards the nonce representation: Supabase expects the SHA-256 *hex* digest sent
 // to Google (not base64url). A regression to base64URLEncode would break sign-in.
 test("nonce is hashed as lowercase hex SHA-256", () => {
-    const hashed = crypto.createHash("sha256").update("abc").digest("hex");
+    const hashed = new Bun.CryptoHasher("sha256").update("abc").digest("hex");
     expect(hashed).toBe(
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );

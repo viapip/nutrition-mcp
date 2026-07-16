@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { streamSSE } from "hono/streaming";
 import { getUserIdByToken } from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { checkRateLimit } from "./rate-limit.js";
@@ -8,6 +9,29 @@ declare module "hono" {
         userId: string;
         accessToken: string;
     }
+}
+
+function boundaryError(
+    c: Context,
+    error: string,
+    status: 401 | 429 | 503,
+    description?: string,
+): Response | Promise<Response> {
+    if (
+        c.req.path === "/api/chat" &&
+        c.req.header("accept")?.includes("text/event-stream")
+    ) {
+        c.status(status);
+        return streamSSE(c, (stream) =>
+            stream.writeSSE({
+                data: JSON.stringify({ type: "error", error }),
+            }),
+        );
+    }
+    return c.json(
+        description ? { error, error_description: description } : { error },
+        status,
+    );
 }
 
 export const authenticateBearer = async (c: Context, next: Next) => {
@@ -20,17 +44,17 @@ export const authenticateBearer = async (c: Context, next: Next) => {
             "WWW-Authenticate",
             `Bearer resource_metadata="${resourceMetadataUrl}"`,
         );
-        return c.json(
-            {
-                error: "unauthorized",
-                error_description: "Bearer token required",
-            },
-            401,
-        );
+        return boundaryError(c, "unauthorized", 401, "Bearer token required");
     }
 
     const token = authHeader.substring(7);
-    const userId = await getUserIdByToken(token);
+    let userId: string | null;
+    try {
+        userId = await getUserIdByToken(token);
+    } catch (err) {
+        console.error("Token lookup failed:", err);
+        return boundaryError(c, "service_unavailable", 503);
+    }
 
     if (!userId) {
         const baseUrl = getBaseUrl(c);
@@ -39,12 +63,11 @@ export const authenticateBearer = async (c: Context, next: Next) => {
             "WWW-Authenticate",
             `Bearer resource_metadata="${resourceMetadataUrl}"`,
         );
-        return c.json(
-            {
-                error: "invalid_token",
-                error_description: "Token is invalid or expired",
-            },
+        return boundaryError(
+            c,
+            "invalid_token",
             401,
+            "Token is invalid or expired",
         );
     }
 
@@ -64,12 +87,11 @@ export const rateLimit = async (c: Context, next: Next) => {
     c.header("X-RateLimit-Remaining", String(result.remaining));
     if (!result.allowed) {
         c.header("Retry-After", String(result.retryAfterSeconds ?? 60));
-        return c.json(
-            {
-                error: "rate_limited",
-                error_description: `Rate limit exceeded (${result.limit} requests per minute). Retry after ${result.retryAfterSeconds}s.`,
-            },
+        return boundaryError(
+            c,
+            "rate_limited",
             429,
+            `Rate limit exceeded (${result.limit} requests per minute). Retry after ${result.retryAfterSeconds}s.`,
         );
     }
     await next();

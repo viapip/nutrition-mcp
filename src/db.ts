@@ -3,6 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { zonedDayStartUtc, zonedNextDayStartUtc } from "./tz.js";
 import { decodeEscapeSequences } from "./normalize.js";
 import { isWeightUnit, type WeightUnit } from "./units.js";
+import { validateDateRange } from "./validate.js";
 
 let sql: SQL | undefined;
 
@@ -25,8 +26,28 @@ export function setSqlForTests(fake: unknown): void {
 }
 
 function errMsg(err: unknown): string {
-    return err instanceof Error ? err.message : String(err);
+    console.error("[db] operation failed:", err);
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "23505") return "conflict";
+    if (code === "23514" || code === "22P02" || code === "22003") {
+        return "validation_failed";
+    }
+    return "database_unavailable";
 }
+
+export function isServiceUnavailableError(err: unknown): boolean {
+    return err instanceof Error && err.message.includes("database_unavailable");
+}
+
+export function isValidationError(err: unknown): boolean {
+    return err instanceof Error && err.message.includes("validation_failed");
+}
+
+export function isConflictError(err: unknown): boolean {
+    return err instanceof Error && err.message.includes("conflict");
+}
+
+export class NotFoundError extends Error {}
 
 // Postgres unique_violation — the driver surfaces the server error code.
 function isUniqueViolation(err: unknown): boolean {
@@ -91,9 +112,7 @@ export async function signUpUser(
         return row.id as string;
     } catch (err) {
         if (isUniqueViolation(err)) throw new Error("User already registered");
-        // The raw DB error lands on the login page — log it, show a generic one.
-        console.error("Sign-up failed:", errMsg(err));
-        throw new Error("Sign-up failed");
+        throw new Error(`Sign-up failed: ${errMsg(err)}`);
     }
 }
 
@@ -102,9 +121,14 @@ export async function signInUser(
     password: string,
 ): Promise<string> {
     const db = getSql();
-    const [row] = await db`
-        select id, password_hash from users
-        where lower(email) = ${email.toLowerCase()}`;
+    let row: Record<string, unknown> | undefined;
+    try {
+        [row] = await db`
+            select id, password_hash from users
+            where lower(email) = ${email.toLowerCase()}`;
+    } catch (err) {
+        throw new Error(`Failed to sign in: ${errMsg(err)}`);
+    }
 
     // Same generic message for "no such user", "Google-only account", and
     // "wrong password" so the login form doesn't leak which one it was. The
@@ -203,14 +227,24 @@ export async function resolveGoogleUser(
 ): Promise<string> {
     const db = getSql();
 
-    const [bySub] = await db`
-        select id from users where google_sub = ${sub}`;
+    let bySub: Record<string, unknown> | undefined;
+    try {
+        [bySub] = await db`
+            select id from users where google_sub = ${sub}`;
+    } catch (err) {
+        throw new Error(`Google sign-in failed: ${errMsg(err)}`);
+    }
     if (bySub) return bySub.id as string;
 
     // First Google sign-in for an existing password account: link by email
     // (validateGoogleClaims already required email_verified).
-    const [byEmail] = await db`
-        select id, google_sub from users where lower(email) = ${email}`;
+    let byEmail: Record<string, unknown> | undefined;
+    try {
+        [byEmail] = await db`
+            select id, google_sub from users where lower(email) = ${email}`;
+    } catch (err) {
+        throw new Error(`Google sign-in failed: ${errMsg(err)}`);
+    }
     if (byEmail) {
         // The account already belongs to a different Google identity — refuse
         // rather than silently rebinding it. (Equal subs can't reach here:
@@ -232,11 +266,16 @@ export async function resolveGoogleUser(
         } catch (err) {
             // 23505: this sub got linked to another row concurrently.
             if (!isUniqueViolation(err))
-                throw new Error("Google sign-in failed");
+                throw new Error(`Google sign-in failed: ${errMsg(err)}`);
         }
         // Lost a race (row gained a sub, or 23505) — resolve by sub.
-        const [row] = await db`
-            select id from users where google_sub = ${sub}`;
+        let row: Record<string, unknown> | undefined;
+        try {
+            [row] = await db`
+                select id from users where google_sub = ${sub}`;
+        } catch (err) {
+            throw new Error(`Google sign-in failed: ${errMsg(err)}`);
+        }
         if (row) return row.id as string;
         throw new Error("Google sign-in failed");
     }
@@ -255,33 +294,23 @@ export async function resolveGoogleUser(
     } catch (err) {
         // Concurrent first sign-in — the other request created the user.
         if (isUniqueViolation(err)) {
-            const [row] = await db`
-                select id from users where google_sub = ${sub}`;
+            let row: Record<string, unknown> | undefined;
+            try {
+                [row] = await db`
+                    select id from users where google_sub = ${sub}`;
+            } catch (retryErr) {
+                throw new Error(`Google sign-in failed: ${errMsg(retryErr)}`);
+            }
             if (row) return row.id as string;
+            throw new Error("Google sign-in failed");
         }
-        throw new Error("Google sign-in failed");
+        throw new Error(`Google sign-in failed: ${errMsg(err)}`);
     }
 }
 
-// ---------- Idempotency ----------
-
-// Derive a stable idempotency key from the request content so the column is
-// always populated and retries dedupe even when the client omits a key. The
-// resolved logged_at is part of the digest, so two genuinely separate but
-// otherwise-identical entries (logged at different times) get distinct keys and
-// are never wrongly merged. A retry replays the same args — including the same
-// logged_at — and therefore lands on the same key. The "auto:" prefix marks
-// server-derived keys, distinguishing them from client-supplied ones.
-function deriveIdempotencyKey(
-    parts: (string | number | null | undefined)[],
-): string {
-    const digest = new Bun.CryptoHasher("sha256")
-        .update(parts.map((p) => p ?? "").join("\u0000"))
-        .digest("hex");
-    return `auto:${digest}`;
-}
-
 // ---------- Meals ----------
+
+export type NutritionSource = "estimate" | "barcode" | "dish" | "manual";
 
 export interface Meal {
     id: string;
@@ -293,6 +322,7 @@ export interface Meal {
     protein_g: number | null;
     carbs_g: number | null;
     fat_g: number | null;
+    nutrition_source: NutritionSource | null;
     notes: string | null;
     idempotency_key: string | null;
 }
@@ -305,6 +335,7 @@ export interface MealInput {
     protein_g?: number | null;
     carbs_g?: number | null;
     fat_g?: number | null;
+    nutrition_source?: NutritionSource | null;
     logged_at?: string;
     notes?: string | null;
     idempotency_key?: string;
@@ -326,6 +357,8 @@ function mapMeal(row: Record<string, unknown>): Meal {
         protein_g: numOrNull(row.protein_g),
         carbs_g: numOrNull(row.carbs_g),
         fat_g: numOrNull(row.fat_g),
+        nutrition_source:
+            (row.nutrition_source as NutritionSource | null) ?? null,
         notes: (row.notes as string | null) ?? null,
         idempotency_key: (row.idempotency_key as string | null) ?? null,
     };
@@ -337,29 +370,17 @@ export async function insertMeal(
 ): Promise<MealInsertResult> {
     const db = getSql();
 
-    // Resolve logged_at once so the digest and the persisted row agree.
-    const loggedAt = input.logged_at ?? new Date().toISOString();
-    // Always populate the key: use the client's if given, otherwise derive a
-    // stable one from the request content (see deriveIdempotencyKey).
-    const idempotencyKey =
-        input.idempotency_key ??
-        deriveIdempotencyKey([
-            userId,
-            input.description,
-            input.meal_type,
-            input.calories,
-            input.protein_g,
-            input.carbs_g,
-            input.fat_g,
-            input.notes,
-            loggedAt,
-        ]);
+    // Retry deduplication requires a stable client-supplied key. When omitted,
+    // the write is intentionally non-idempotent because a generated timestamp
+    // cannot be reproduced by a later retry.
+    const idempotencyKey = input.idempotency_key ?? null;
 
     try {
         const [row] = await db`
             insert into meals (
                 user_id, description, meal_type, calories,
-                protein_g, carbs_g, fat_g, logged_at, notes, idempotency_key
+                protein_g, carbs_g, fat_g, nutrition_source, logged_at, notes,
+                idempotency_key
             ) values (
                 ${userId},
                 ${decodeEscapeSequences(input.description)},
@@ -368,7 +389,8 @@ export async function insertMeal(
                 ${input.protein_g ?? null},
                 ${input.carbs_g ?? null},
                 ${input.fat_g ?? null},
-                ${loggedAt},
+                ${input.nutrition_source ?? null},
+                coalesce(${input.logged_at ?? null}::timestamptz, now()),
                 ${input.notes != null ? decodeEscapeSequences(input.notes) : null},
                 ${idempotencyKey}
             )
@@ -378,7 +400,7 @@ export async function insertMeal(
         // The idempotency key already exists (a retry, or a concurrent insert
         // that won the race) — return the stored row as a dedup instead of
         // failing. This is the sole dedup path: no pre-insert lookup.
-        if (isUniqueViolation(err)) {
+        if (idempotencyKey && isUniqueViolation(err)) {
             const [row] = await db`
                 select * from meals
                 where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
@@ -402,13 +424,17 @@ export async function getMealsInRange(
     endDate: string,
     tz: string = "UTC",
 ): Promise<Meal[]> {
+    validateDateRange(startDate, endDate);
     const startUtc = zonedDayStartUtc(startDate, tz);
     const endUtc = zonedNextDayStartUtc(endDate, tz);
 
     const db = getSql();
     try {
         const rows = await db`
-            select * from meals
+            select id, user_id, logged_at, meal_type, description, calories,
+                   protein_g, carbs_g, fat_g, nutrition_source, notes,
+                   idempotency_key
+            from meals
             where user_id = ${userId}
               and logged_at >= ${startUtc.toISOString()}
               and logged_at < ${endUtc.toISOString()}
@@ -429,6 +455,29 @@ export async function getAllMeals(userId: string): Promise<Meal[]> {
         return rows.map(mapMeal);
     } catch (err) {
         throw new Error(`Failed to get meals: ${errMsg(err)}`);
+    }
+}
+
+export async function searchMeals(
+    userId: string,
+    query: string,
+    limit: number = 20,
+): Promise<Meal[]> {
+    const db = getSql();
+    try {
+        const literalQuery = query.replace(/[\\%_]/g, "\\$&");
+        const rows = await db`
+            select id, user_id, logged_at, meal_type, description, calories,
+                   protein_g, carbs_g, fat_g, nutrition_source, notes,
+                   idempotency_key
+            from meals
+            where user_id = ${userId}
+              and description ilike ${`%${literalQuery}%`} escape ${"\\"}
+            order by logged_at desc
+            limit ${Math.min(100, Math.max(1, Math.round(limit)))}`;
+        return rows.map(mapMeal);
+    } catch (err) {
+        throw new Error(`Failed to search meals: ${errMsg(err)}`);
     }
 }
 
@@ -457,6 +506,8 @@ export async function updateMeal(
     if (fields.protein_g !== undefined) update.protein_g = fields.protein_g;
     if (fields.carbs_g !== undefined) update.carbs_g = fields.carbs_g;
     if (fields.fat_g !== undefined) update.fat_g = fields.fat_g;
+    if (fields.nutrition_source !== undefined)
+        update.nutrition_source = fields.nutrition_source;
     if (fields.logged_at !== undefined) update.logged_at = fields.logged_at;
     if (fields.notes !== undefined)
         update.notes =
@@ -475,9 +526,10 @@ export async function updateMeal(
                       update meals set ${db(update)}
                       where id = ${id} and user_id = ${userId}
                       returning *`;
-        if (!row) throw new Error("meal not found");
+        if (!row) throw new NotFoundError("meal not found");
         return mapMeal(row);
     } catch (err) {
+        if (err instanceof NotFoundError) throw err;
         throw new Error(`Failed to update meal: ${errMsg(err)}`);
     }
 }
@@ -592,9 +644,10 @@ export async function updateDish(
                       update dishes set ${db(update)}
                       where id = ${id} and user_id = ${userId}
                       returning *`;
-        if (!row) throw new Error("dish not found");
+        if (!row) throw new NotFoundError("dish not found");
         return mapDish(row);
     } catch (err) {
+        if (err instanceof NotFoundError) throw err;
         throw new Error(`Failed to update dish: ${errMsg(err)}`);
     }
 }
@@ -772,6 +825,47 @@ export async function upsertNutritionGoals(
     }
 }
 
+/** Atomic partial upsert: omitted fields keep their current value. */
+export async function patchNutritionGoals(
+    userId: string,
+    patch: NutritionGoalsInput,
+): Promise<NutritionGoals> {
+    const value = (key: keyof NutritionGoalsInput) => patch[key] ?? null;
+    const provided = (key: keyof NutritionGoalsInput) =>
+        patch[key] !== undefined;
+    const db = getSql();
+    try {
+        const [row] = await db`
+            insert into nutrition_goals (
+                user_id, daily_calories, daily_protein_g, daily_carbs_g,
+                daily_fat_g, daily_water_ml, target_weight_g, updated_at
+            ) values (
+                ${userId}, ${value("daily_calories")},
+                ${value("daily_protein_g")}, ${value("daily_carbs_g")},
+                ${value("daily_fat_g")}, ${value("daily_water_ml")},
+                ${value("target_weight_g")}, now()
+            )
+            on conflict (user_id) do update set
+                daily_calories = case when ${provided("daily_calories")}::boolean
+                    then ${value("daily_calories")}::integer else nutrition_goals.daily_calories end,
+                daily_protein_g = case when ${provided("daily_protein_g")}::boolean
+                    then ${value("daily_protein_g")}::numeric else nutrition_goals.daily_protein_g end,
+                daily_carbs_g = case when ${provided("daily_carbs_g")}::boolean
+                    then ${value("daily_carbs_g")}::numeric else nutrition_goals.daily_carbs_g end,
+                daily_fat_g = case when ${provided("daily_fat_g")}::boolean
+                    then ${value("daily_fat_g")}::numeric else nutrition_goals.daily_fat_g end,
+                daily_water_ml = case when ${provided("daily_water_ml")}::boolean
+                    then ${value("daily_water_ml")}::integer else nutrition_goals.daily_water_ml end,
+                target_weight_g = case when ${provided("target_weight_g")}::boolean
+                    then ${value("target_weight_g")}::integer else nutrition_goals.target_weight_g end,
+                updated_at = now()
+            returning *`;
+        return mapGoals(row);
+    } catch (err) {
+        throw new Error(`Failed to save goals: ${errMsg(err)}`);
+    }
+}
+
 export async function getNutritionGoals(
     userId: string,
 ): Promise<NutritionGoals | null> {
@@ -827,13 +921,7 @@ export async function insertWater(
 ): Promise<WaterInsertResult> {
     const db = getSql();
 
-    // Resolve logged_at once so the digest and the persisted row agree.
-    const loggedAt = input.logged_at ?? new Date().toISOString();
-    // Always populate the key: use the client's if given, otherwise derive a
-    // stable one from the request content (see deriveIdempotencyKey).
-    const idempotencyKey =
-        input.idempotency_key ??
-        deriveIdempotencyKey([userId, input.amount_ml, input.notes, loggedAt]);
+    const idempotencyKey = input.idempotency_key ?? null;
 
     try {
         const [row] = await db`
@@ -842,14 +930,14 @@ export async function insertWater(
             ) values (
                 ${userId},
                 ${input.amount_ml},
-                ${loggedAt},
+                coalesce(${input.logged_at ?? null}::timestamptz, now()),
                 ${input.notes ?? null},
                 ${idempotencyKey}
             )
             returning *`;
         return { entry: mapWater(row), deduplicated: false };
     } catch (err) {
-        if (isUniqueViolation(err)) {
+        if (idempotencyKey && isUniqueViolation(err)) {
             const [row] = await db`
                 select * from water_log
                 where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
@@ -873,13 +961,16 @@ export async function getWaterInRange(
     endDate: string,
     tz: string = "UTC",
 ): Promise<WaterEntry[]> {
+    validateDateRange(startDate, endDate);
     const startUtc = zonedDayStartUtc(startDate, tz);
     const endUtc = zonedNextDayStartUtc(endDate, tz);
 
     const db = getSql();
     try {
         const rows = await db`
-            select * from water_log
+            select id, user_id, amount_ml, logged_at, notes, created_at,
+                   idempotency_key
+            from water_log
             where user_id = ${userId}
               and logged_at >= ${startUtc.toISOString()}
               and logged_at < ${endUtc.toISOString()}
@@ -947,13 +1038,8 @@ export async function insertWeight(
 ): Promise<WeightInsertResult> {
     const db = getSql();
 
-    // Resolve logged_at once so the digest and the persisted row agree.
     const loggedAt = input.logged_at ?? new Date().toISOString();
-    // Always populate the key: use the client's if given, otherwise derive a
-    // stable one from the request content (see deriveIdempotencyKey).
-    const idempotencyKey =
-        input.idempotency_key ??
-        deriveIdempotencyKey([userId, input.weight_g, input.notes, loggedAt]);
+    const idempotencyKey = input.idempotency_key ?? null;
 
     try {
         const [row] = await db`
@@ -969,7 +1055,7 @@ export async function insertWeight(
             returning *`;
         return { entry: mapWeight(row), deduplicated: false };
     } catch (err) {
-        if (isUniqueViolation(err)) {
+        if (idempotencyKey && isUniqueViolation(err)) {
             const [row] = await db`
                 select * from weight_log
                 where user_id = ${userId} and idempotency_key = ${idempotencyKey}`;
@@ -993,13 +1079,16 @@ export async function getWeightInRange(
     endDate: string,
     tz: string = "UTC",
 ): Promise<WeightEntry[]> {
+    validateDateRange(startDate, endDate);
     const startUtc = zonedDayStartUtc(startDate, tz);
     const endUtc = zonedNextDayStartUtc(endDate, tz);
 
     const db = getSql();
     try {
         const rows = await db`
-            select * from weight_log
+            select id, user_id, weight_g, logged_at, notes, created_at,
+                   idempotency_key
+            from weight_log
             where user_id = ${userId}
               and logged_at >= ${startUtc.toISOString()}
               and logged_at < ${endUtc.toISOString()}
@@ -1052,9 +1141,10 @@ export async function updateWeight(
                       update weight_log set ${db(update)}
                       where id = ${id} and user_id = ${userId}
                       returning *`;
-        if (!row) throw new Error("weight entry not found");
+        if (!row) throw new NotFoundError("weight entry not found");
         return mapWeight(row);
     } catch (err) {
+        if (err instanceof NotFoundError) throw err;
         throw new Error(`Failed to update weight: ${errMsg(err)}`);
     }
 }
@@ -1098,10 +1188,14 @@ export async function deleteAllUserData(userId: string): Promise<void> {
 
 // ---------- OAuth tokens ----------
 
+const TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+function tokenExpiry(): string {
+    return new Date(Date.now() + TOKEN_TTL_MS).toISOString();
+}
+
 export async function storeToken(token: string, userId: string): Promise<void> {
-    const expiresAt = new Date(
-        Date.now() + 365 * 24 * 60 * 60 * 1000,
-    ).toISOString();
+    const expiresAt = tokenExpiry();
 
     const db = getSql();
     try {
@@ -1123,8 +1217,22 @@ export async function getUserIdByToken(token: string): Promise<string | null> {
             select user_id from oauth_tokens
             where token = ${token} and expires_at > now()`;
         return (row?.user_id as string | undefined) ?? null;
-    } catch {
-        return null;
+    } catch (err) {
+        throw new Error(`Failed to look up token: ${errMsg(err)}`);
+    }
+}
+
+export async function revokeToken(
+    token: string,
+    userId: string,
+): Promise<void> {
+    const db = getSql();
+    try {
+        await db`
+            delete from oauth_tokens
+            where token = ${token} and user_id = ${userId}`;
+    } catch (err) {
+        throw new Error(`Failed to revoke token: ${errMsg(err)}`);
     }
 }
 
@@ -1177,8 +1285,45 @@ export async function consumeAuthCode(
             user_id: row.user_id as string,
             code_challenge: (row.code_challenge as string | null) ?? null,
         };
-    } catch {
-        return null;
+    } catch (err) {
+        throw new Error(`Failed to consume auth code: ${errMsg(err)}`);
+    }
+}
+
+/** Validate, consume, and issue both replacements in one transaction. */
+export async function redeemAuthCode(
+    code: string,
+    redirectUri: string | undefined,
+    verifierHash: string | undefined,
+    accessToken: string,
+    refreshToken: string,
+): Promise<boolean> {
+    const db = getSql();
+    try {
+        return await db.begin(async (tx) => {
+            const [row] = await tx`
+                select redirect_uri, user_id, code_challenge
+                from auth_codes
+                where code = ${code} and expires_at > now()
+                for update`;
+            if (
+                !row ||
+                redirectUri !== row.redirect_uri ||
+                (row.code_challenge && verifierHash !== row.code_challenge)
+            ) {
+                return false;
+            }
+            await tx`delete from auth_codes where code = ${code}`;
+            await tx`
+                insert into oauth_tokens (token, user_id, expires_at)
+                values (${accessToken}, ${row.user_id}, ${tokenExpiry()})`;
+            await tx`
+                insert into refresh_tokens (token, user_id, expires_at)
+                values (${refreshToken}, ${row.user_id}, ${tokenExpiry()})`;
+            return true;
+        });
+    } catch (err) {
+        throw new Error(`Failed to redeem auth code: ${errMsg(err)}`);
     }
 }
 
@@ -1188,9 +1333,7 @@ export async function storeRefreshToken(
     token: string,
     userId: string,
 ): Promise<void> {
-    const expiresAt = new Date(
-        Date.now() + 365 * 24 * 60 * 60 * 1000,
-    ).toISOString();
+    const expiresAt = tokenExpiry();
 
     const db = getSql();
     try {
@@ -1213,8 +1356,36 @@ export async function consumeRefreshToken(
             where token = ${token} and expires_at > now()
             returning user_id`;
         return (row?.user_id as string | undefined) ?? null;
-    } catch {
-        return null;
+    } catch (err) {
+        throw new Error(`Failed to consume refresh token: ${errMsg(err)}`);
+    }
+}
+
+/** Single-use refresh rotation; the old token survives any insertion failure. */
+export async function rotateRefreshToken(
+    token: string,
+    accessToken: string,
+    refreshToken: string,
+): Promise<boolean> {
+    const db = getSql();
+    try {
+        return await db.begin(async (tx) => {
+            const [row] = await tx`
+                select user_id from refresh_tokens
+                where token = ${token} and expires_at > now()
+                for update`;
+            if (!row) return false;
+            await tx`delete from refresh_tokens where token = ${token}`;
+            await tx`
+                insert into oauth_tokens (token, user_id, expires_at)
+                values (${accessToken}, ${row.user_id}, ${tokenExpiry()})`;
+            await tx`
+                insert into refresh_tokens (token, user_id, expires_at)
+                values (${refreshToken}, ${row.user_id}, ${tokenExpiry()})`;
+            return true;
+        });
+    } catch (err) {
+        throw new Error(`Failed to rotate refresh token: ${errMsg(err)}`);
     }
 }
 
@@ -1253,10 +1424,8 @@ export async function getMealExportCsv(token: string): Promise<string | null> {
             select csv_text from meal_exports
             where token = ${token} and expires_at > now()`;
         return (row?.csv_text as string | undefined) ?? null;
-    } catch {
-        // Lookup semantics like getUserIdByToken: a DB hiccup reads as "no
-        // such export" (404), not a 500.
-        return null;
+    } catch (err) {
+        throw new Error(`Failed to get export: ${errMsg(err)}`);
     }
 }
 
@@ -1264,9 +1433,27 @@ export async function getMealExportCsv(token: string): Promise<string | null> {
 export async function sweepExpiredMealExports(): Promise<number> {
     const db = getSql();
     try {
-        const rows = await db`
-            delete from meal_exports where expires_at < now() returning token`;
-        return rows.length;
+        return await db.begin(async (tx) => {
+            const exports = await tx`
+                delete from meal_exports where expires_at < now() returning token`;
+            const access = await tx`
+                delete from oauth_tokens where expires_at < now() returning token`;
+            const refresh = await tx`
+                delete from refresh_tokens where expires_at < now() returning token`;
+            const codes = await tx`
+                delete from auth_codes where expires_at < now() returning code`;
+            const analytics = await tx`
+                delete from tool_analytics
+                where invoked_at < now() - interval '90 days'
+                returning id`;
+            return (
+                exports.length +
+                access.length +
+                refresh.length +
+                codes.length +
+                analytics.length
+            );
+        });
     } catch (err) {
         console.warn("Export sweep failed:", errMsg(err));
         return 0;
@@ -1354,14 +1541,21 @@ export async function getLandingStats(): Promise<LandingStats> {
     const db = getSql();
     try {
         const [row] = await db`
+            with meal_stats as (
+                select count(*)::int as food_logs,
+                       coalesce(sum(calories), 0)::float8 as total_calories,
+                       coalesce(sum(protein_g), 0)::float8 as total_protein_g,
+                       coalesce(sum(carbs_g), 0)::float8 as total_carbs_g,
+                       coalesce(sum(fat_g), 0)::float8 as total_fat_g
+                from meals
+            ), profile_stats as (
+                select count(distinct timezone)::int as timezones,
+                       coalesce(json_agg(distinct timezone), '[]'::json) as timezone_list
+                from profiles
+            )
             select
-                (select count(*)::int from meals) as food_logs,
-                (select coalesce(sum(calories), 0)::float8 from meals) as total_calories,
-                (select coalesce(sum(protein_g), 0)::float8 from meals) as total_protein_g,
-                (select coalesce(sum(carbs_g), 0)::float8 from meals) as total_carbs_g,
-                (select coalesce(sum(fat_g), 0)::float8 from meals) as total_fat_g,
-                (select count(distinct timezone)::int from profiles) as timezones,
-                (select coalesce(json_agg(distinct timezone), '[]'::json) from profiles) as timezone_list`;
+                meal_stats.*, profile_stats.*
+            from meal_stats cross join profile_stats`;
         return {
             food_logs: numOrNull(row.food_logs) ?? 0,
             total_calories: numOrNull(row.total_calories) ?? 0,

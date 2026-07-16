@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -68,6 +69,7 @@ type Suggestion = {
     send?: string;
     prefill?: string;
     camera?: boolean;
+    barcode?: boolean;
 };
 function suggestions(): Suggestion[] {
     const h = new Date().getHours();
@@ -79,6 +81,7 @@ function suggestions(): Suggestion[] {
               : { label: "Записать ужин…", prefill: "На ужин " }; // и ночью
     return [
         { label: "Сфоткать тарелку", camera: true },
+        { label: "Сканировать штрихкод", barcode: true },
         meal,
         { label: "+300 мл воды", send: "Запиши 300 мл воды" },
         h >= 18
@@ -462,6 +465,8 @@ export default function ChatScreen() {
     const [pendingImage, setPendingImage] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<string | null>(null);
+    // Текст финального ответа, растущий по токенам, пока ход идёт.
+    const [streamText, setStreamText] = useState("");
     const [needsKey, setNeedsKey] = useState(false);
     // Purely visual: paints the input border accent while focused.
     const [inputFocused, setInputFocused] = useState(false);
@@ -470,12 +475,19 @@ export default function ChatScreen() {
     // «Скопировано» — мимолётная плашка после долгого тапа по пузырю.
     const [copied, setCopied] = useState(false);
     const [viewerUri, setViewerUri] = useState<string | null>(null);
+    const [scanning, setScanning] = useState(false);
+    // «Нужен доступ к камере» — когда сканер штрихкода не получил разрешение.
+    const [scanNote, setScanNote] = useState<string | null>(null);
+    const [permission, requestPermission] = useCameraPermissions();
     const atBottom = useRef(true);
     const pendingClaimed = useRef(false);
     const inputRef = useRef<TextInput>(null);
     const scrollRef = useRef<ScrollView>(null);
     const abortRef = useRef<AbortController | null>(null);
     const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // onBarcodeScanned сыплет колбэками по кадрам — ref гасит все после первого.
+    const scannedRef = useRef(false);
+    const scanNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // «Ассистент выключен» — до первой отправки; на focus, чтобы баннер гас
     // после сохранения ключа в настройках
@@ -679,6 +691,29 @@ export default function ChatScreen() {
         ]);
     };
 
+    // Штрихкод — отдельный поток на expo-camera, не трогает фото-пайплайн.
+    const openScanner = async () => {
+        if (scanNoteTimer.current) clearTimeout(scanNoteTimer.current);
+        setScanNote(null);
+        let granted = permission?.granted ?? false;
+        if (!granted) granted = (await requestPermission()).granted;
+        if (!granted) {
+            setScanNote("Нужен доступ к камере, чтобы сканировать штрихкод.");
+            scanNoteTimer.current = setTimeout(() => setScanNote(null), 5000);
+            return;
+        }
+        scannedRef.current = false;
+        setScanning(true);
+    };
+
+    const onBarcodeScanned = ({ data }: { data: string }) => {
+        if (scannedRef.current) return;
+        scannedRef.current = true;
+        tapBuzz();
+        setScanning(false);
+        void send(`штрихкод ${data}`);
+    };
+
     // Deep-link отрабатывает по ЗНАЧЕНИЮ compose и вычищает параметр, чтобы
     // повторный тап той же кнопки виджета при открытом чате снова сработал.
     const composeHandled = useRef<string | undefined>(undefined);
@@ -707,6 +742,7 @@ export default function ChatScreen() {
         runLock.current = true;
         setBusy(true);
         setStatus("Думаю…");
+        setStreamText("");
         const ctrl = new AbortController();
         abortRef.current = ctrl;
         // Ключ хода берём с последнего сообщения пользователя: send ставит
@@ -720,6 +756,8 @@ export default function ChatScreen() {
                 (name) => setStatus(TOOL_STATUS[name] ?? "Думаю…"),
                 ctrl.signal,
                 turnKey,
+                (t) => setStreamText((s) => s + t),
+                () => setStreamText(""),
             );
             successBuzz();
             const assistant = stamped("assistant", reply.message);
@@ -756,6 +794,9 @@ export default function ChatScreen() {
             abortRef.current = null;
             setBusy(false);
             setStatus(null);
+            // Batches with the append above in one tick — no flash between
+            // the live preview and the authoritative reply.
+            setStreamText("");
         }
     };
 
@@ -868,6 +909,10 @@ export default function ChatScreen() {
             void pickImage(Platform.OS !== "web");
             return;
         }
+        if (s.barcode) {
+            void openScanner();
+            return;
+        }
         if (s.send) {
             void send(s.send);
             return;
@@ -883,6 +928,7 @@ export default function ChatScreen() {
     useEffect(
         () => () => {
             if (copiedTimer.current) clearTimeout(copiedTimer.current);
+            if (scanNoteTimer.current) clearTimeout(scanNoteTimer.current);
         },
         [],
     );
@@ -1220,21 +1266,34 @@ export default function ChatScreen() {
                                         },
                                     ]}
                                 >
-                                    <View style={styles.statusRow}>
-                                        <TypingDots theme={theme} />
-                                        {status && (
-                                            <Text
-                                                style={[
-                                                    styles.statusText,
-                                                    {
-                                                        color: theme.inkMuted,
-                                                    },
-                                                ]}
-                                            >
-                                                {status}
-                                            </Text>
-                                        )}
-                                    </View>
+                                    {streamText ? (
+                                        // Финальный ответ «печатается» по токенам —
+                                        // тем же стилем, что и готовое сообщение.
+                                        <Text
+                                            style={[
+                                                styles.bubbleText,
+                                                { color: theme.ink },
+                                            ]}
+                                        >
+                                            {streamText}
+                                        </Text>
+                                    ) : (
+                                        <View style={styles.statusRow}>
+                                            <TypingDots theme={theme} />
+                                            {status && (
+                                                <Text
+                                                    style={[
+                                                        styles.statusText,
+                                                        {
+                                                            color: theme.inkMuted,
+                                                        },
+                                                    ]}
+                                                >
+                                                    {status}
+                                                </Text>
+                                            )}
+                                        </View>
+                                    )}
                                 </View>
                             )}
                         </ScrollView>
@@ -1350,6 +1409,15 @@ export default function ChatScreen() {
                             </ScrollView>
                         )}
 
+                    {scanNote && (
+                        <Text
+                            accessibilityLiveRegion="polite"
+                            style={[styles.scanNote, { color: theme.inkMuted }]}
+                        >
+                            {scanNote}
+                        </Text>
+                    )}
+
                     {/* Input bar */}
                     <View
                         style={[
@@ -1464,6 +1532,44 @@ export default function ChatScreen() {
                         />
                     )}
                 </Pressable>
+            </Modal>
+
+            {/* Сканер штрихкода — отдельный поток на expo-camera */}
+            <Modal
+                visible={scanning}
+                animationType="slide"
+                onRequestClose={() => setScanning(false)}
+            >
+                <View style={styles.scanner}>
+                    <CameraView
+                        style={StyleSheet.absoluteFill}
+                        facing="back"
+                        barcodeScannerSettings={{
+                            barcodeTypes: [
+                                "ean13",
+                                "ean8",
+                                "upc_a",
+                                "upc_e",
+                                "code128",
+                            ],
+                        }}
+                        onBarcodeScanned={onBarcodeScanned}
+                    />
+                    <SafeAreaView style={styles.scannerOverlay}>
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Закрыть сканер штрихкода"
+                            onPress={() => setScanning(false)}
+                            hitSlop={12}
+                            style={styles.scannerClose}
+                        >
+                            <Text style={styles.scannerCloseText}>×</Text>
+                        </Pressable>
+                        <Text style={styles.scannerHint}>
+                            Наведите камеру на штрихкод
+                        </Text>
+                    </SafeAreaView>
+                </View>
             </Modal>
         </SafeAreaView>
     );
@@ -1585,6 +1691,34 @@ const styles = StyleSheet.create({
         padding: Spacing.lg,
     },
     viewerImage: { width: "100%", height: "80%" },
+    scanner: { flex: 1, backgroundColor: "#000" },
+    scannerOverlay: { flex: 1, justifyContent: "space-between" },
+    scannerClose: {
+        alignSelf: "flex-end",
+        margin: Spacing.lg,
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0,0,0,0.45)",
+    },
+    scannerCloseText: { color: "#fff", fontSize: 26, lineHeight: 28 },
+    scannerHint: {
+        color: "#fff",
+        fontFamily: Fonts.sansMedium,
+        fontSize: 15,
+        textAlign: "center",
+        marginBottom: Spacing.xxl,
+        paddingHorizontal: Spacing.lg,
+    },
+    scanNote: {
+        fontFamily: Fonts.sans,
+        fontSize: 13,
+        lineHeight: 18,
+        paddingHorizontal: Spacing.lg,
+        paddingBottom: Spacing.sm,
+    },
     bubble: {
         maxWidth: "85%",
         borderRadius: Radii.lg,

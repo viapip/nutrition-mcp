@@ -110,15 +110,13 @@ export async function exportMeals(userId: string): Promise<MealsExportResult> {
 }
 
 /**
- * Delete export rows past their expiry. Runs as a background sweep so no
- * export outlives its link by more than one sweep interval, even across
- * server restarts and for users who never export again.
+ * Delete expired exports, OAuth credentials, auth codes, and old analytics.
  */
 export async function sweepStaleExports(): Promise<void> {
     try {
         const removed = await sweepExpiredMealExports();
         if (removed > 0) {
-            console.log(`Export sweep: removed ${removed} stale export(s).`);
+            console.log(`Cleanup sweep: removed ${removed} stale row(s).`);
         }
     } catch (err) {
         console.warn(
@@ -130,7 +128,7 @@ export async function sweepStaleExports(): Promise<void> {
 
 let sweepRunning = false;
 
-/** Start the periodic export-cleanup sweep. Call once at server startup. */
+/** Start the periodic data-cleanup sweep. Call once at server startup. */
 export function startExportCleanup(): void {
     setInterval(() => {
         if (sweepRunning) return;

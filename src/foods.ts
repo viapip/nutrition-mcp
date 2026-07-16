@@ -15,6 +15,8 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const SOURCE_OFF = "openfoodfacts" as const;
 // Open Food Facts is community-edited and changes often; refresh weekly.
 const OFF_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MISS_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_MISS = { miss: true } as const;
 
 // Open Food Facts requires a custom User-Agent in the form
 // `AppName (ContactEmail)` so they can reach the operator about traffic. It is
@@ -146,23 +148,27 @@ export async function fetchProductFromOFF(
 async function getCachedFood(
     source: string,
     sourceId: string,
-    ttlMs: number,
-): Promise<FoodResult | null> {
+): Promise<FoodResult | null | undefined> {
     try {
         const row = await getFoodCacheRow(source, sourceId);
-        if (!row) return null;
+        if (!row) return undefined;
+        const miss =
+            !!row.payload &&
+            typeof row.payload === "object" &&
+            (row.payload as { miss?: boolean }).miss === true;
         const ageMs = Date.now() - new Date(row.fetched_at).getTime();
-        if (ageMs > ttlMs) return null;
+        if (ageMs > (miss ? MISS_TTL_MS : OFF_TTL_MS)) return undefined;
+        if (miss) return null;
         return row.payload as FoodResult;
     } catch {
-        return null;
+        return undefined;
     }
 }
 
 async function putCachedFood(
     source: string,
     sourceId: string,
-    payload: FoodResult,
+    payload: FoodResult | typeof CACHE_MISS,
 ): Promise<void> {
     try {
         await putFoodCacheRow(source, sourceId, payload);
@@ -177,11 +183,11 @@ async function putCachedFood(
 export async function lookupBarcode(
     barcode: string,
 ): Promise<FoodResult | null> {
-    const cached = await getCachedFood(SOURCE_OFF, barcode, OFF_TTL_MS);
-    if (cached) return cached;
+    const cached = await getCachedFood(SOURCE_OFF, barcode);
+    if (cached !== undefined) return cached;
 
     const food = await fetchProductFromOFF(barcode);
-    if (food) await putCachedFood(SOURCE_OFF, barcode, food);
+    await putCachedFood(SOURCE_OFF, barcode, food ?? CACHE_MISS);
     return food;
 }
 

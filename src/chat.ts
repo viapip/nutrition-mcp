@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { createHash } from "node:crypto";
 import { streamSSE } from "hono/streaming";
 import {
     insertMeal,
@@ -17,7 +16,7 @@ import {
     getWeightInRange,
     getLatestWeight,
     getNutritionGoals,
-    upsertNutritionGoals,
+    patchNutritionGoals,
     listDishes,
     insertDish,
     type MealInput,
@@ -28,6 +27,12 @@ import { normalizeBarcode, lookupBarcode } from "./foods.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
 import { todayInTz, shiftLocalDate } from "./tz.js";
+import {
+    isNutritionSource,
+    nonNegativeNumber,
+    validateDate,
+    validateDateRange,
+} from "./validate.js";
 
 /** Чат мобильного приложения: OpenAI-совместимый провайдер (Kimi по умолчанию)
  * с tool-use над тем же слоем данных, что и MCP. Провайдер = три env-переменных
@@ -40,7 +45,7 @@ const LLM_MODEL = () => process.env.LLM_MODEL ?? "kimi-k2.6";
 const MAX_TOOL_ROUNDS = 6;
 const MAX_MESSAGES = 40;
 const MAX_TOTAL_CHARS = 16_000;
-const REQUEST_TIMEOUT_MS = 60_000;
+const TURN_TIMEOUT_MS = 90_000;
 
 /** OpenAI-vision content part: plain text or an inline data-URL image. */
 export type ChatPart =
@@ -63,6 +68,7 @@ export interface MealProposal {
     protein_g?: number;
     carbs_g?: number;
     fat_g?: number;
+    nutrition_source?: "estimate" | "barcode" | "dish" | "manual";
 }
 
 function textLength(content: ChatMessage["content"]): number {
@@ -115,6 +121,12 @@ const TOOLS = [
                     protein_g: { type: "number" },
                     carbs_g: { type: "number" },
                     fat_g: { type: "number" },
+                    nutrition_source: {
+                        type: "string",
+                        enum: ["estimate", "barcode", "dish", "manual"],
+                        description:
+                            "Origin of the nutrition values: estimate, barcode lookup, saved dish, or manual user values.",
+                    },
                 },
                 required: ["description", "meal_type"],
             },
@@ -140,6 +152,12 @@ const TOOLS = [
                     protein_g: { type: "number" },
                     carbs_g: { type: "number" },
                     fat_g: { type: "number" },
+                    nutrition_source: {
+                        type: "string",
+                        enum: ["estimate", "barcode", "dish", "manual"],
+                        description:
+                            "Origin of the nutrition values: estimate, barcode lookup, saved dish, or manual user values.",
+                    },
                 },
                 required: ["description", "meal_type"],
             },
@@ -210,6 +228,10 @@ const TOOLS = [
                     protein_g: { type: ["number", "null"] },
                     carbs_g: { type: ["number", "null"] },
                     fat_g: { type: ["number", "null"] },
+                    nutrition_source: {
+                        type: ["string", "null"],
+                        enum: ["estimate", "barcode", "dish", "manual", null],
+                    },
                 },
                 required: ["id"],
             },
@@ -368,8 +390,17 @@ function collectProposal(
             "carbs_g",
             "fat_g",
         ] as const) {
-            if (args[k] != null) p[k] = positive(args[k]);
+            if (args[k] != null) p[k] = nonNegativeNumber(args[k]);
         }
+        if (
+            args.nutrition_source !== undefined &&
+            !isNutritionSource(args.nutrition_source)
+        ) {
+            throw new Error("invalid nutrition_source");
+        }
+        p.nutrition_source =
+            (args.nutrition_source as MealProposal["nutrition_source"]) ??
+            "estimate";
         out.push(p);
         return JSON.stringify({
             proposed: true,
@@ -383,10 +414,11 @@ function collectProposal(
 }
 
 /** The dashboard aggregation for a given local date (defaults to today). */
-async function daySnapshot(userId: string, date?: string) {
-    const tz = await getUserTimezone(userId);
+async function daySnapshot(userId: string, tz: string, date?: string) {
     const today = todayInTz(tz);
     const day = date ?? today;
+    validateDate(day);
+    validateDateRange(shiftLocalDate(day, -30), day);
     const [meals, water, weights, latest, goals] = await Promise.all([
         getMealsByDate(userId, day, tz),
         getWaterByDate(userId, day, tz),
@@ -407,27 +439,39 @@ export async function executeTool(
     name: string,
     args: Record<string, unknown>,
     idem?: string,
+    timezone: string = "UTC",
 ): Promise<string> {
     try {
         switch (name) {
             case "log_meal": {
+                if (
+                    args.nutrition_source !== undefined &&
+                    !isNutritionSource(args.nutrition_source)
+                ) {
+                    throw new Error("invalid nutrition_source");
+                }
                 const input: MealInput = {
                     description: String(args.description ?? ""),
                     meal_type: args.meal_type as MealInput["meal_type"],
                     calories:
                         args.calories == null
                             ? undefined
-                            : positive(args.calories),
+                            : nonNegativeNumber(args.calories),
                     protein_g:
                         args.protein_g == null
                             ? undefined
-                            : positive(args.protein_g),
+                            : nonNegativeNumber(args.protein_g),
                     carbs_g:
                         args.carbs_g == null
                             ? undefined
-                            : positive(args.carbs_g),
+                            : nonNegativeNumber(args.carbs_g),
                     fat_g:
-                        args.fat_g == null ? undefined : positive(args.fat_g),
+                        args.fat_g == null
+                            ? undefined
+                            : nonNegativeNumber(args.fat_g),
+                    nutrition_source:
+                        (args.nutrition_source as MealInput["nutrition_source"]) ??
+                        "estimate",
                     idempotency_key: idem,
                 };
                 if (!input.description) throw new Error("description required");
@@ -449,13 +493,13 @@ export async function executeTool(
                 return JSON.stringify({ logged: true, entry });
             }
             case "get_dashboard":
-                return JSON.stringify(await daySnapshot(userId));
+                return JSON.stringify(await daySnapshot(userId, timezone));
             case "get_day": {
                 const date = String(args.date ?? "");
-                if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-                    throw new Error("date must be YYYY-MM-DD");
-                }
-                return JSON.stringify(await daySnapshot(userId, date));
+                validateDate(date);
+                return JSON.stringify(
+                    await daySnapshot(userId, timezone, date),
+                );
             }
             case "update_meal": {
                 const id = String(args.id ?? "");
@@ -496,41 +540,25 @@ export async function executeTool(
                 return JSON.stringify({ deleted: true });
             }
             case "set_goals": {
-                const current = await getNutritionGoals(userId);
                 // Merge semantics: only keys present in args change; null clears.
-                const num = (k: string, cur: number | null) =>
+                const num = (k: string) =>
                     k in args
                         ? args[k] == null
                             ? null
-                            : positive(args[k])
-                        : cur;
-                const goals = await upsertNutritionGoals(userId, {
-                    daily_calories: num(
-                        "daily_calories",
-                        current?.daily_calories ?? null,
-                    ),
-                    daily_protein_g: num(
-                        "daily_protein_g",
-                        current?.daily_protein_g ?? null,
-                    ),
-                    daily_carbs_g: num(
-                        "daily_carbs_g",
-                        current?.daily_carbs_g ?? null,
-                    ),
-                    daily_fat_g: num(
-                        "daily_fat_g",
-                        current?.daily_fat_g ?? null,
-                    ),
-                    daily_water_ml: num(
-                        "daily_water_ml",
-                        current?.daily_water_ml ?? null,
-                    ),
+                            : nonNegativeNumber(args[k])
+                        : undefined;
+                const goals = await patchNutritionGoals(userId, {
+                    daily_calories: num("daily_calories"),
+                    daily_protein_g: num("daily_protein_g"),
+                    daily_carbs_g: num("daily_carbs_g"),
+                    daily_fat_g: num("daily_fat_g"),
+                    daily_water_ml: num("daily_water_ml"),
                     target_weight_g:
                         "target_weight_kg" in args
                             ? args.target_weight_kg == null
                                 ? null
                                 : weightGramsFromKg(args.target_weight_kg)
-                            : (current?.target_weight_g ?? null),
+                            : undefined,
                 });
                 return JSON.stringify({ saved: true, goals });
             }
@@ -548,7 +576,7 @@ export async function executeTool(
                 const name = String(args.name ?? "").trim();
                 if (!name) throw new Error("name required");
                 const num = (k: string) =>
-                    args[k] == null ? undefined : positive(args[k]);
+                    args[k] == null ? undefined : nonNegativeNumber(args[k]);
                 const dish = await insertDish(userId, {
                     name,
                     meal_type:
@@ -581,11 +609,23 @@ interface LlmMessage {
     }[];
 }
 
+interface LlmUsage {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+}
+
+interface LlmResult {
+    message: LlmMessage;
+    usage?: LlmUsage;
+}
+
 async function callLlm(
     messages: unknown[],
     apiKey: string,
-    signal?: AbortSignal,
-): Promise<LlmMessage> {
+    signal: AbortSignal,
+    onDelta?: (text: string) => unknown,
+): Promise<LlmResult> {
     const res = await fetch(`${LLM_BASE_URL()}/chat/completions`, {
         method: "POST",
         headers: {
@@ -596,12 +636,12 @@ async function callLlm(
             model: LLM_MODEL(),
             messages,
             tools: TOOLS,
+            stream: true,
+            stream_options: { include_usage: true },
             // No temperature: kimi-for-coding rejects anything but 1;
             // provider defaults are fine for the rest.
         }),
-        signal: signal
-            ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-            : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal,
     });
     if (!res.ok) {
         // Server-log only (client gets a generic chat_failed); still redact
@@ -614,12 +654,88 @@ async function callLlm(
             `LLM request failed: ${res.status} ${body.slice(0, 200)}`,
         );
     }
-    const data = (await res.json()) as {
-        choices?: { message?: LlmMessage }[];
+    if (!res.headers.get("content-type")?.includes("text/event-stream")) {
+        const data = (await res.json()) as {
+            choices?: { message?: LlmMessage }[];
+            usage?: LlmUsage;
+        };
+        const message = data.choices?.[0]?.message;
+        if (!message) throw new Error("LLM returned no message");
+        if (message.content) await onDelta?.(message.content);
+        return { message, usage: data.usage };
+    }
+    if (!res.body) throw new Error("LLM returned no stream");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const toolCalls = new Map<
+        number,
+        { id: string; function: { name: string; arguments: string } }
+    >();
+    let content = "";
+    let usage: LlmUsage | undefined;
+    let buffer = "";
+
+    const consumeLine = async (line: string) => {
+        if (!line.startsWith("data:")) return;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") return;
+        const event = JSON.parse(payload) as {
+            choices?: {
+                delta?: {
+                    content?: string;
+                    tool_calls?: {
+                        index: number;
+                        id?: string;
+                        function?: { name?: string; arguments?: string };
+                    }[];
+                };
+            }[];
+            usage?: LlmUsage;
+        };
+        if (event.usage) usage = event.usage;
+        const delta = event.choices?.[0]?.delta;
+        if (delta?.content) {
+            content += delta.content;
+            await onDelta?.(delta.content);
+        }
+        for (const chunk of delta?.tool_calls ?? []) {
+            const call = toolCalls.get(chunk.index) ?? {
+                id: "",
+                function: { name: "", arguments: "" },
+            };
+            if (chunk.id) call.id += chunk.id;
+            if (chunk.function?.name) call.function.name += chunk.function.name;
+            if (chunk.function?.arguments)
+                call.function.arguments += chunk.function.arguments;
+            toolCalls.set(chunk.index, call);
+        }
     };
-    const msg = data.choices?.[0]?.message;
-    if (!msg) throw new Error("LLM returned no message");
-    return msg;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) await consumeLine(line);
+        if (done) break;
+    }
+    if (buffer) await consumeLine(buffer);
+
+    const assembled = [...toolCalls.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, call]) => call);
+    if (!content && assembled.length === 0) {
+        throw new Error("LLM returned no message");
+    }
+    return {
+        message: {
+            role: "assistant",
+            content: content || null,
+            tool_calls: assembled.length ? assembled : undefined,
+        },
+        usage,
+    };
 }
 
 // Текст, УТВЕРЖДАЮЩИЙ существование карточки («Предложила: …», «Подтвердите»).
@@ -634,11 +750,22 @@ export async function runChatTurn(
     userId: string,
     history: ChatMessage[],
     apiKey: string,
-    onTool?: (name: string) => void,
+    onTool?: (name: string) => unknown,
     signal?: AbortSignal,
     turnKey?: string,
+    onDelta?: (text: string) => unknown,
+    onReset?: () => unknown,
+    timezone?: string,
 ): Promise<{ message: string; proposals: MealProposal[] }> {
-    const tz = await getUserTimezone(userId);
+    const startedAt = performance.now();
+    const roundLatenciesMs: number[] = [];
+    const roundUsage: (LlmUsage | null)[] = [];
+    let rounds = 0;
+    let outcome = "error";
+    const turnSignal = signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)])
+        : AbortSignal.timeout(TURN_TIMEOUT_MS);
+    const tz = timezone ?? (await getUserTimezone(userId));
     const messages: unknown[] = [
         {
             role: "system",
@@ -659,6 +786,7 @@ export async function runChatTurn(
                 "If several entries match, list them and ask which one; confirm deletions before calling delete tools. " +
                 "Estimate calories/macros yourself when the user doesn't give numbers, and say you estimated. " +
                 "For packaged products with a barcode (typed, or readable on a photo of the package), call lookup_barcode first and scale to the amount eaten. " +
+                "Set nutrition_source on every meal/proposal: barcode after lookup_barcode, dish for saved dishes, manual for user-supplied macros, otherwise estimate. " +
                 "When the user sends a food photo, identify the dish and portion size, estimate calories and macros, and call propose_meal. " +
                 "SAVED DISHES: the user keeps a personal catalog of recurring dishes. When the user " +
                 "reports eating something that sounds like a named/recurring item (a product or a " +
@@ -678,7 +806,21 @@ export async function runChatTurn(
     const proposals: MealProposal[] = [];
     try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const msg = await callLlm(messages, apiKey, signal);
+            const roundStartedAt = performance.now();
+            rounds += 1;
+            let result: LlmResult;
+            try {
+                result = await callLlm(messages, apiKey, turnSignal, onDelta);
+                roundUsage.push(result.usage ?? null);
+            } catch (err) {
+                roundUsage.push(null);
+                throw err;
+            } finally {
+                roundLatenciesMs.push(
+                    Math.round(performance.now() - roundStartedAt),
+                );
+            }
+            const msg = result.message;
             if (!msg.tool_calls?.length) {
                 const text = msg.content ?? "";
                 // Анти-мимикрия: ответ клеймит карточку, а ход не дал ни
@@ -691,6 +833,7 @@ export async function runChatTurn(
                 ) {
                     nudged = true;
                     console.log("[chat] proposal claimed without tool — nudge");
+                    await onReset?.();
                     messages.push(msg);
                     messages.push({
                         role: "system",
@@ -699,19 +842,31 @@ export async function runChatTurn(
                     });
                     continue;
                 }
+                outcome = "ok";
                 return { message: text, proposals };
             }
             messages.push(msg);
             for (const call of msg.tool_calls) {
                 // Client hit Stop — don't run tools it no longer wants.
-                if (signal?.aborted) throw new Error("aborted");
+                if (turnSignal.aborted) throw new Error("aborted");
                 let args: Record<string, unknown> = {};
+                let argsError: string | undefined;
                 try {
-                    args = JSON.parse(call.function.arguments || "{}");
+                    const parsed = JSON.parse(
+                        call.function.arguments || "{}",
+                    ) as unknown;
+                    if (
+                        !parsed ||
+                        typeof parsed !== "object" ||
+                        Array.isArray(parsed)
+                    ) {
+                        throw new Error("tool arguments must be an object");
+                    }
+                    args = parsed as Record<string, unknown>;
                 } catch {
-                    // leave args empty; executeTool reports the validation error
+                    argsError = "tool arguments must be a JSON object";
                 }
-                onTool?.(call.function.name);
+                await onTool?.(call.function.name);
                 // Ключ = (turn, позиция, канонизированные args) → log_* дедупятся
                 // на ретрае. ponytail: перестановка одинаковых вызовов между
                 // ретраями может задвоить — принимаем, редкость
@@ -721,54 +876,95 @@ export async function runChatTurn(
                     Object.keys(args).sort(),
                 );
                 const idem = turnKey
-                    ? `chat:${turnKey}:${seq}:${createHash("sha256")
+                    ? `chat:${turnKey}:${seq}:${new Bun.CryptoHasher("sha256")
                           .update(`${call.function.name}\n${canonicalArgs}`)
                           .digest("hex")
                           .slice(0, 16)}`
                     : undefined;
-                const result =
-                    call.function.name === "propose_meal"
-                        ? collectProposal(args, proposals)
-                        : await executeTool(
-                              userId,
-                              call.function.name,
-                              args,
-                              idem,
-                          );
+                const toolResult = argsError
+                    ? JSON.stringify({ error: argsError })
+                    : call.function.name === "propose_meal"
+                      ? collectProposal(args, proposals)
+                      : await executeTool(
+                            userId,
+                            call.function.name,
+                            args,
+                            idem,
+                            tz,
+                        );
                 // Observability: tool-call outcomes are otherwise invisible in
                 // the runtime logs (analytics only covers MCP tools).
-                const failed = result.startsWith('{"error"');
+                const failed = toolResult.startsWith('{"error"');
                 console.log(
-                    `[chat] tool ${call.function.name} ${failed ? `err: ${JSON.parse(result).error}` : "ok"}`,
+                    `[chat] tool ${call.function.name} ${failed ? `err: ${JSON.parse(toolResult).error}` : "ok"}`,
                 );
-                if (/^\{"(logged|updated|deleted|saved)":true/.test(result)) {
+                if (
+                    /^\{"(logged|updated|deleted|saved)":true/.test(toolResult)
+                ) {
                     logged = true;
                 }
                 messages.push({
                     role: "tool",
                     tool_call_id: call.id,
-                    content: result,
+                    content: toolResult,
                 });
             }
         }
         throw new Error("tool loop did not converge");
     } catch (err) {
-        // A retry after a partial success would double-log (idempotency keys
-        // include a fresh logged_at), so degrade to a canned confirmation.
-        if (logged) {
+        // Without a client-stable turn key, retrying after a partial success
+        // could double-log, so degrade to a canned confirmation.
+        if (logged || proposals.length) {
+            const russian = /[А-Яа-яЁё]/.test(
+                JSON.stringify(history.at(-1)?.content ?? ""),
+            );
+            outcome = "partial";
             return {
-                message: "Записал — но ответ не дописался. Загляни в дашборд.",
+                message: proposals.length
+                    ? russian
+                        ? "Карточка готова — ответ не дописался, но её можно проверить ниже."
+                        : "The card is ready — the reply was interrupted, but you can review it below."
+                    : russian
+                      ? "Записал — но ответ не дописался. Загляни в дашборд."
+                      : "Saved — the reply was interrupted. Check the dashboard.",
                 proposals,
             };
         }
         throw err;
+    } finally {
+        console.log(
+            JSON.stringify({
+                event: "chat_turn_complete",
+                user_id: userId,
+                outcome,
+                rounds,
+                round_llm_ms: roundLatenciesMs,
+                total_ms: Math.round(performance.now() - startedAt),
+                round_usage: roundUsage,
+            }),
+        );
     }
 }
+
+const activeChatUsers = new Set<string>();
 
 export function createChatRouter() {
     const chat = new Hono<{ Variables: { userId: string } }>();
 
     chat.post("/api/chat", authenticateBearer, rateLimit, async (c) => {
+        const wantsSse = c.req.header("accept")?.includes("text/event-stream");
+        const fail = (
+            error: string,
+            status: 400 | 409 | 503,
+        ): Response | Promise<Response> => {
+            if (!wantsSse) return c.json({ error }, status);
+            c.status(status);
+            return streamSSE(c, (stream) =>
+                stream.writeSSE({
+                    data: JSON.stringify({ type: "error", error }),
+                }),
+            );
+        };
         let history: ChatMessage[];
         let turnKey: string | undefined;
         try {
@@ -784,7 +980,7 @@ export function createChatRouter() {
                 turnKey = body.turn_key;
             }
         } catch {
-            return c.json({ error: "invalid_request" }, 400);
+            return fail("invalid_request", 400);
         }
         if (
             !Array.isArray(history) ||
@@ -802,20 +998,32 @@ export function createChatRouter() {
                 MAX_TOTAL_CHARS ||
             imageCount(history) > MAX_IMAGES
         ) {
-            return c.json({ error: "invalid_request" }, 400);
+            return fail("invalid_request", 400);
         }
         const userId = c.get("userId");
+        if (activeChatUsers.has(userId)) {
+            return fail("chat_in_progress", 409);
+        }
+        activeChatUsers.add(userId);
 
         // The user's own key wins; the server key is the shared fallback.
-        const profile = await getProfile(userId);
+        let profile;
+        try {
+            profile = await getProfile(userId);
+        } catch (err) {
+            activeChatUsers.delete(userId);
+            console.error("Chat profile lookup failed:", err);
+            return fail("service_unavailable", 503);
+        }
         const apiKey = profile?.llm_api_key ?? process.env.LLM_API_KEY;
         if (!apiKey) {
-            return c.json({ error: "chat_not_configured" }, 503);
+            activeChatUsers.delete(userId);
+            return fail("chat_not_configured", 503);
         }
 
         // SSE: narrate tool calls while the turn runs, so the app can show
         // live status instead of a minute of typing dots.
-        if (c.req.header("accept")?.includes("text/event-stream")) {
+        if (wantsSse) {
             return streamSSE(c, async (stream) => {
                 try {
                     const { message, proposals } = await runChatTurn(
@@ -823,13 +1031,22 @@ export function createChatRouter() {
                         history,
                         apiKey,
                         (name) =>
-                            void stream.writeSSE({
+                            stream.writeSSE({
                                 data: JSON.stringify({ type: "tool", name }),
                             }),
                         // Client Stop aborts the request; stop burning tokens
                         // and running tools for an answer nobody will see.
                         c.req.raw.signal,
                         turnKey,
+                        (text) =>
+                            stream.writeSSE({
+                                data: JSON.stringify({ type: "delta", text }),
+                            }),
+                        () =>
+                            stream.writeSSE({
+                                data: JSON.stringify({ type: "reset" }),
+                            }),
+                        profile?.timezone ?? "UTC",
                     );
                     await stream.writeSSE({
                         data: JSON.stringify({
@@ -846,6 +1063,8 @@ export function createChatRouter() {
                             error: "chat_failed",
                         }),
                     });
+                } finally {
+                    activeChatUsers.delete(userId);
                 }
             });
         }
@@ -858,11 +1077,16 @@ export function createChatRouter() {
                 undefined,
                 c.req.raw.signal,
                 turnKey,
+                undefined,
+                undefined,
+                profile?.timezone ?? "UTC",
             );
             return c.json({ message, proposals });
         } catch (err) {
             console.error("Chat turn failed:", err);
             return c.json({ error: "chat_failed" }, 502);
+        } finally {
+            activeChatUsers.delete(userId);
         }
     });
 

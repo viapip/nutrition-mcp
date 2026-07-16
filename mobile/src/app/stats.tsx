@@ -29,12 +29,16 @@ import {
     newIdempotencyKey,
     type FrequentMeal,
     type StatsData,
+    type StatsDay,
 } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth";
-import { kgText, weightDeltaText } from "@/lib/format";
+import { kgText } from "@/lib/format";
 import { successBuzz, tapBuzz } from "@/lib/haptics";
 
 type ThemeColors = (typeof Colors)["light"] | (typeof Colors)["dark"];
+
+const PERIODS = [7, 30, 90] as const;
+type Period = (typeof PERIODS)[number];
 
 /** день / дня / дней */
 function pluralDays(n: number): string {
@@ -54,6 +58,62 @@ function litreText(ml: number): string {
 
 function avgOf(xs: number[]): number {
     return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+}
+
+/** 2–4 честные строки итога из уже загруженных данных — без LLM и доп. запроса. */
+function buildInsights(d: {
+    windowLen: number;
+    loggedWindow: StatsDay[];
+    goals: StatsData["goals"];
+    weightSeries: StatsData["weight"]["series"];
+    weightDeltaG: number | null;
+}): string[] {
+    const { windowLen, loggedWindow, goals, weightSeries, weightDeltaG } = d;
+    const loggedCount = loggedWindow.length;
+    if (loggedCount === 0) return ["Пока нет записей за этот период."];
+
+    const lines: string[] = [];
+    lines.push(
+        loggedCount === windowLen
+            ? `Ни одного пропуска за ${windowLen} ${pluralDays(windowLen)}.`
+            : `Записано ${loggedCount} из ${windowLen} ${pluralDays(windowLen)}.`,
+    );
+
+    const avgCal = Math.round(avgOf(loggedWindow.map((x) => x.calories)));
+    const cGoal = goals.daily_calories;
+    if (cGoal != null) {
+        const diff = avgCal - cGoal;
+        lines.push(
+            Math.abs(diff) < 50
+                ? `Калории в среднем ${avgCal.toLocaleString("ru-RU")} ккал — у самой цели.`
+                : `Калории в среднем ${avgCal.toLocaleString("ru-RU")} ккал — на ${Math.abs(diff).toLocaleString("ru-RU")} ${diff > 0 ? "выше" : "ниже"} цели.`,
+        );
+    } else {
+        lines.push(
+            `Калории в среднем ${avgCal.toLocaleString("ru-RU")} ккал в день.`,
+        );
+    }
+
+    const pGoal = goals.daily_protein_g;
+    if (pGoal != null) {
+        const below = loggedWindow.filter((x) => x.protein_g < pGoal).length;
+        lines.push(
+            below === 0
+                ? "Белок ни разу не просел ниже цели."
+                : `Белок ниже цели ${below} ${pluralDays(below)} из ${loggedCount}.`,
+        );
+    }
+
+    if (weightSeries.length >= 2 && weightDeltaG != null) {
+        const absKg = kgText(Math.abs(weightDeltaG));
+        lines.push(
+            Math.abs(weightDeltaG) < 100
+                ? `Вес держится ровно за ${windowLen} ${pluralDays(windowLen)}.`
+                : `Вес ${weightDeltaG > 0 ? "вырос" : "снизился"} на ${absKg} кг за ${windowLen} ${pluralDays(windowLen)}.`,
+        );
+    }
+
+    return lines.slice(0, 4);
 }
 
 function StatsSkeleton({ theme }: { theme: ThemeColors }) {
@@ -160,6 +220,7 @@ export default function StatsScreen() {
         Math.min(width, MaxContentWidth) - Spacing.lg * 2 - Spacing.md * 2;
 
     const { guard, onError } = useRequireAuth();
+    const [days, setDays] = useState<Period>(30);
     const [stats, setStats] = useState<StatsData | null>(null);
     const [failed, setFailed] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
@@ -167,20 +228,25 @@ export default function StatsScreen() {
     const [repeatNote, setRepeatNote] = useState<string | null>(null);
     // Ключ-на-действие по индексу частого: повтор после сбоя дедупится сервером.
     const repeatKeys = useRef<Record<number, string>>({});
+    // Смена периода на лету: поздний ответ старого запроса не должен затереть новый.
+    const reqSeq = useRef(0);
 
     const load = useCallback(async () => {
+        const seq = ++reqSeq.current;
         try {
-            const s = await getStats(30);
+            const s = await getStats(days);
+            if (seq !== reqSeq.current) return;
             setStats(s);
             // Список частого мог перестроиться — пометки/ключи по индексам неверны.
             setAdded({});
             repeatKeys.current = {};
             setFailed(false);
         } catch (err) {
+            if (seq !== reqSeq.current) return;
             if (onError(err)) return;
             setFailed(true);
         }
-    }, [onError]);
+    }, [days, onError]);
 
     useEffect(() => {
         guard(() => void load());
@@ -266,12 +332,14 @@ export default function StatsScreen() {
     }
 
     const windowLen = stats.days.length;
-    const logged30 = stats.days.filter((d) => d.logged);
+    const loggedWindow = stats.days.filter((d) => d.logged);
     const last7 = stats.days.slice(-7);
     const logged7 = last7.filter((d) => d.logged);
 
-    const avg30 = Math.round(avgOf(logged30.map((d) => d.calories)));
+    const avgWindow = Math.round(avgOf(loggedWindow.map((d) => d.calories)));
     const avg7 = Math.round(avgOf(logged7.map((d) => d.calories)));
+    // При периоде «7» окно и есть неделя — второй столбец дублировал бы среднее.
+    const showWeekAvg = windowLen > 7;
 
     const goals = stats.goals;
     const avgProtein7 = avgOf(logged7.map((d) => d.protein_g));
@@ -280,9 +348,10 @@ export default function StatsScreen() {
 
     const avgWater7 = avgOf(logged7.map((d) => d.water_ml));
     const waterGoal = goals.daily_water_ml;
+    // «Закрыто N из 7» — та же неделя, что и среднее (непрологированный день = 0 = не закрыт).
     const waterDaysHit =
         waterGoal != null
-            ? stats.days.filter((d) => d.water_ml >= waterGoal).length
+            ? last7.filter((d) => d.water_ml >= waterGoal).length
             : null;
     const waterPct = waterGoal ? Math.min(avgWater7 / waterGoal, 1) : 0;
 
@@ -297,7 +366,31 @@ export default function StatsScreen() {
         lastW != null && stats.weight.target_g != null
             ? lastW.weight_g - stats.weight.target_g
             : null;
-    const weightFootnote = weightDeltaText(weightDeltaG, toGoalG);
+    // Инлайн вместо format.weightDeltaText: подпись должна отражать окно, а не «30».
+    const weightFootnote = ((): string | null => {
+        const parts: string[] = [];
+        if (weightDeltaG != null) {
+            parts.push(
+                `${weightDeltaG > 0 ? "+" : "−"}${kgText(Math.abs(weightDeltaG))} кг за ${windowLen} ${pluralDays(windowLen)}`,
+            );
+        }
+        if (toGoalG != null) {
+            parts.push(
+                Math.abs(toGoalG) < 100
+                    ? "цель достигнута"
+                    : `до цели ${kgText(Math.abs(toGoalG))} кг`,
+            );
+        }
+        return parts.length ? parts.join(" · ") : null;
+    })();
+
+    const insightLines = buildInsights({
+        windowLen,
+        loggedWindow,
+        goals,
+        weightSeries,
+        weightDeltaG,
+    });
 
     // Стрик упирается в окно выборки — за его краем правды нет.
     const streakCapped = stats.streak.current >= windowLen;
@@ -327,7 +420,7 @@ export default function StatsScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                ИТОГИ · 30 ДНЕЙ
+                                ИТОГИ
                             </Text>
                             <Pressable
                                 accessibilityRole="button"
@@ -347,6 +440,58 @@ export default function StatsScreen() {
                                     Закрыть
                                 </Text>
                             </Pressable>
+                        </View>
+                    </FadeIn>
+
+                    {/* Period toggle */}
+                    <FadeIn delay={30}>
+                        <View style={styles.segment}>
+                            {PERIODS.map((p) => {
+                                const active = p === days;
+                                return (
+                                    <Pressable
+                                        key={p}
+                                        accessibilityRole="button"
+                                        accessibilityState={{
+                                            selected: active,
+                                        }}
+                                        accessibilityLabel={`Период ${p} ${pluralDays(p)}`}
+                                        onPress={() => {
+                                            tapBuzz();
+                                            setDays(p);
+                                        }}
+                                        style={({ pressed }) => [
+                                            styles.segmentChip,
+                                            {
+                                                backgroundColor: active
+                                                    ? theme.accent
+                                                    : theme.surfaceElevated,
+                                                transform: [
+                                                    {
+                                                        scale: pressed
+                                                            ? 0.96
+                                                            : 1,
+                                                    },
+                                                ],
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.segmentText,
+                                                TabularNums,
+                                                {
+                                                    color: active
+                                                        ? theme.onAccent
+                                                        : theme.inkSecondary,
+                                                },
+                                            ]}
+                                        >
+                                            {p}
+                                        </Text>
+                                    </Pressable>
+                                );
+                            })}
                         </View>
                     </FadeIn>
 
@@ -415,6 +560,48 @@ export default function StatsScreen() {
                         </View>
                     </FadeIn>
 
+                    {/* Weekly insight */}
+                    {insightLines.length > 0 && (
+                        <FadeIn delay={90}>
+                            <View
+                                style={[
+                                    styles.block,
+                                    { backgroundColor: theme.surfaceElevated },
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.eyebrow,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    КОРОТКО
+                                </Text>
+                                {insightLines.map((line, i) => (
+                                    <View key={i} style={styles.insightRow}>
+                                        <View
+                                            style={[
+                                                styles.insightDot,
+                                                {
+                                                    backgroundColor:
+                                                        theme.accent,
+                                                },
+                                            ]}
+                                        />
+                                        <Text
+                                            style={[
+                                                styles.insightText,
+                                                { color: theme.inkSecondary },
+                                            ]}
+                                        >
+                                            {line}
+                                        </Text>
+                                    </View>
+                                ))}
+                            </View>
+                        </FadeIn>
+                    )}
+
                     {/* Calories */}
                     <FadeIn delay={120}>
                         <View
@@ -445,7 +632,7 @@ export default function StatsScreen() {
                                             { color: theme.inkMuted },
                                         ]}
                                     >
-                                        СРЕДНЕЕ · 30
+                                        {`СРЕДНЕЕ · ${windowLen}`}
                                     </Text>
                                     <Text
                                         style={[
@@ -454,7 +641,7 @@ export default function StatsScreen() {
                                             { color: theme.ink },
                                         ]}
                                     >
-                                        {avg30.toLocaleString("ru-RU")}
+                                        {avgWindow.toLocaleString("ru-RU")}
                                         <Text
                                             style={[
                                                 styles.statUnit,
@@ -465,33 +652,35 @@ export default function StatsScreen() {
                                         </Text>
                                     </Text>
                                 </View>
-                                <View style={styles.statCell}>
-                                    <Text
-                                        style={[
-                                            styles.eyebrow,
-                                            { color: theme.inkMuted },
-                                        ]}
-                                    >
-                                        ЗА НЕДЕЛЮ
-                                    </Text>
-                                    <Text
-                                        style={[
-                                            styles.statValue,
-                                            TabularNums,
-                                            { color: theme.ink },
-                                        ]}
-                                    >
-                                        {avg7.toLocaleString("ru-RU")}
+                                {showWeekAvg && (
+                                    <View style={styles.statCell}>
                                         <Text
                                             style={[
-                                                styles.statUnit,
+                                                styles.eyebrow,
                                                 { color: theme.inkMuted },
                                             ]}
                                         >
-                                            {" ккал"}
+                                            ЗА НЕДЕЛЮ
                                         </Text>
-                                    </Text>
-                                </View>
+                                        <Text
+                                            style={[
+                                                styles.statValue,
+                                                TabularNums,
+                                                { color: theme.ink },
+                                            ]}
+                                        >
+                                            {avg7.toLocaleString("ru-RU")}
+                                            <Text
+                                                style={[
+                                                    styles.statUnit,
+                                                    { color: theme.inkMuted },
+                                                ]}
+                                            >
+                                                {" ккал"}
+                                            </Text>
+                                        </Text>
+                                    </View>
+                                )}
                             </View>
                         </View>
                     </FadeIn>
@@ -593,8 +782,8 @@ export default function StatsScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    Цель закрыта {waterDaysHit} из {windowLen}{" "}
-                                    {pluralDays(windowLen)}
+                                    Цель закрыта {waterDaysHit} из{" "}
+                                    {last7.length} {pluralDays(last7.length)}
                                 </Text>
                             )}
                         </View>
@@ -872,6 +1061,27 @@ const styles = StyleSheet.create({
         letterSpacing: 2.5,
     },
     closeAction: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    segment: { flexDirection: "row", gap: Spacing.xs },
+    segmentChip: {
+        minWidth: 52,
+        paddingVertical: 8,
+        paddingHorizontal: Spacing.md,
+        borderRadius: Radii.pill,
+        alignItems: "center",
+    },
+    segmentText: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
+    insightRow: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: Spacing.sm,
+    },
+    insightDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7 },
+    insightText: {
+        flex: 1,
+        fontFamily: Fonts.sans,
+        fontSize: 14,
+        lineHeight: 20,
+    },
     hero: {
         paddingTop: Spacing.sm,
         paddingBottom: Spacing.md,

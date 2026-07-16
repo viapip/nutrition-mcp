@@ -1,19 +1,18 @@
 import { Hono, type Context } from "hono";
-import crypto from "node:crypto";
 import {
-    storeToken,
     storeAuthCode,
-    consumeAuthCode,
     signUpUser,
     signInUser,
     signInWithGoogleIdToken,
-    storeRefreshToken,
-    consumeRefreshToken,
+    redeemAuthCode,
+    rotateRefreshToken,
+    isServiceUnavailableError,
 } from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { checkRateLimit } from "./rate-limit.js";
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
+const MAX_AUTHORIZE_SESSIONS = 500;
 
 interface OAuthSession {
     state: string;
@@ -28,8 +27,20 @@ interface OAuthSession {
 // In-memory session store (sessions are short-lived, 10min TTL)
 const sessions = new Map<
     string,
-    { session: OAuthSession; expiresAt: number }
+    { session: OAuthSession; expiresAt: number; inFlight?: boolean }
 >();
+
+type SessionEntry = NonNullable<ReturnType<typeof sessions.get>>;
+
+function claimSession(entry: SessionEntry): boolean {
+    if (entry.inFlight) return false;
+    entry.inFlight = true;
+    return true;
+}
+
+function releaseSession(sessionId: string, entry: SessionEntry): void {
+    if (sessions.get(sessionId) === entry) entry.inFlight = false;
+}
 
 function cleanExpiredSessions() {
     const now = Date.now();
@@ -40,12 +51,20 @@ function cleanExpiredSessions() {
 
 setInterval(cleanExpiredSessions, 60 * 1000);
 
-function base64URLEncode(buffer: Buffer): string {
-    return buffer
-        .toString("base64")
+function base64URLEncode(buffer: ArrayBuffer): string {
+    return btoa(String.fromCharCode(...new Uint8Array(buffer)))
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=/g, "");
+}
+
+async function pkceHash(verifier: string): Promise<string> {
+    return base64URLEncode(
+        await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(verifier),
+        ),
+    );
 }
 
 // Brute-force guard for the credential endpoints (Supabase Auth used to
@@ -98,8 +117,6 @@ async function finishAuthorization(
     session: OAuthSession,
     userId: string,
 ): Promise<Response> {
-    sessions.delete(sessionId);
-
     const authCode = crypto.randomUUID();
     await storeAuthCode(
         authCode,
@@ -107,6 +124,7 @@ async function finishAuthorization(
         userId,
         session.codeChallenge,
     );
+    sessions.delete(sessionId);
 
     const redirectUrl = new URL(session.redirectUri);
     redirectUrl.searchParams.set("code", authCode);
@@ -178,6 +196,7 @@ export function createOAuthRouter() {
         const redirectUri = c.req.query("redirect_uri");
         const state = c.req.query("state");
         const codeChallenge = c.req.query("code_challenge");
+        const codeChallengeMethod = c.req.query("code_challenge_method");
 
         if (responseType !== "code") {
             return c.json({ error: "unsupported_response_type" }, 400);
@@ -204,8 +223,31 @@ export function createOAuthRouter() {
                 400,
             );
         }
+        if (
+            (codeChallenge &&
+                (codeChallengeMethod !== "S256" ||
+                    !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge))) ||
+            (!codeChallenge && codeChallengeMethod)
+        ) {
+            return c.json(
+                {
+                    error: "invalid_request",
+                    error_description: "PKCE must use S256",
+                },
+                400,
+            );
+        }
+        // TODO: make PKCE mandatory once all deployed MCP clients send it.
 
         cleanExpiredSessions();
+        if (sessions.size >= MAX_AUTHORIZE_SESSIONS) {
+            return c.json({ error: "rate_limited" }, 429);
+        }
+        const ip =
+            c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        if (!checkRateLimit(`authorize:ip:${ip}`).allowed) {
+            return c.json({ error: "rate_limited" }, 429);
+        }
 
         // Store session and show login page
         const sessionId = crypto.randomUUID();
@@ -242,40 +284,69 @@ export function createOAuthRouter() {
             sessions.delete(sessionId);
             return c.json({ error: "session_expired" }, 400);
         }
-
-        let userId: string;
-        try {
-            userId = await signInUser(email, password);
-        } catch {
-            // Sign-in failed: either the email is free (create the account) or
-            // it exists with a wrong password. Gate new accounts behind the
-            // same invite code as /api/signup so OAuth can't bypass it.
-            const required = process.env.SIGNUP_CODE;
-            if (required && body.code !== required) {
-                return c.html(
-                    await renderLoginPage(sessionId, "Invalid invite code."),
-                    400,
-                );
-            }
-            try {
-                userId = await signUpUser(email, password);
-            } catch (err: unknown) {
-                const message =
-                    err instanceof Error
-                        ? err.message
-                        : "Authentication failed";
-                // A unique violation means the email is taken, so sign-in just
-                // failed on a wrong password — show a generic login error, never
-                // "already registered" (which would confirm the account exists).
-                const shown =
-                    message === "User already registered"
-                        ? "Invalid email or password."
-                        : message;
-                return c.html(await renderLoginPage(sessionId, shown), 400);
-            }
+        if (!claimSession(entry)) {
+            return c.json({ error: "session_in_use" }, 409);
         }
 
-        return finishAuthorization(c, sessionId, entry.session, userId);
+        try {
+            let userId: string;
+            try {
+                userId = await signInUser(email, password);
+            } catch (err) {
+                if (isServiceUnavailableError(err)) {
+                    console.error("OAuth sign-in failed:", err);
+                    return c.json({ error: "service_unavailable" }, 503);
+                }
+                // Sign-in failed: either the email is free (create the account) or
+                // it exists with a wrong password. Gate new accounts behind the
+                // same invite code as /api/signup so OAuth can't bypass it.
+                const required = process.env.SIGNUP_CODE;
+                if (required && body.code !== required) {
+                    return c.html(
+                        await renderLoginPage(
+                            sessionId,
+                            "Invalid invite code.",
+                        ),
+                        400,
+                    );
+                }
+                try {
+                    userId = await signUpUser(email, password);
+                } catch (err: unknown) {
+                    if (isServiceUnavailableError(err)) {
+                        return c.json({ error: "service_unavailable" }, 503);
+                    }
+                    const message =
+                        err instanceof Error
+                            ? err.message
+                            : "Authentication failed";
+                    // A unique violation means the email is taken, so sign-in just
+                    // failed on a wrong password — show a generic login error, never
+                    // "already registered" (which would confirm the account exists).
+                    const shown =
+                        message === "User already registered"
+                            ? "Invalid email or password."
+                            : message;
+                    return c.html(await renderLoginPage(sessionId, shown), 400);
+                }
+            }
+
+            try {
+                return await finishAuthorization(
+                    c,
+                    sessionId,
+                    entry.session,
+                    userId,
+                );
+            } catch (err) {
+                if (isServiceUnavailableError(err)) {
+                    return c.json({ error: "service_unavailable" }, 503);
+                }
+                throw err;
+            }
+        } finally {
+            releaseSession(sessionId, entry);
+        }
     });
 
     // Google sign-in — step 1: redirect the user to Google's consent screen.
@@ -304,8 +375,7 @@ export function createOAuthRouter() {
         // the raw value is handed to signInWithGoogleIdToken on callback,
         // which recomputes the digest and compares it to the token's nonce.
         const rawNonce = crypto.randomUUID();
-        const hashedNonce = crypto
-            .createHash("sha256")
+        const hashedNonce = new Bun.CryptoHasher("sha256")
             .update(rawNonce)
             .digest("hex");
         entry.session.googleNonce = rawNonce;
@@ -373,6 +443,9 @@ export function createOAuthRouter() {
         if (!googleClientId || !googleClientSecret) {
             return c.json({ error: "google_not_configured" }, 500);
         }
+        if (!claimSession(entry)) {
+            return c.json({ error: "session_in_use" }, 409);
+        }
 
         try {
             const tokenRes = await fetch(
@@ -407,13 +480,24 @@ export function createOAuthRouter() {
                 rawNonce,
             );
 
-            return finishAuthorization(c, sessionId, entry.session, userId);
+            return await finishAuthorization(
+                c,
+                sessionId,
+                entry.session,
+                userId,
+            );
         } catch (err) {
+            console.error("Google sign-in failed:", err);
+            if (isServiceUnavailableError(err)) {
+                return c.json({ error: "service_unavailable" }, 503);
+            }
             const message =
                 err instanceof Error && err.message === "invite_required"
                     ? "Registration is invite-only. Ask the owner for access."
                     : "Google sign-in failed. Please try again.";
             return renderError(message);
+        } finally {
+            releaseSession(sessionId, entry);
         }
     });
 
@@ -433,16 +517,22 @@ export function createOAuthRouter() {
                 return c.json({ error: "invalid_request" }, 400);
             }
 
-            // Look up the existing user from the refresh token
-            const userId = await consumeRefreshToken(refreshToken);
-            if (!userId) {
-                return c.json({ error: "invalid_grant" }, 400);
-            }
-
             const newAccessToken = crypto.randomUUID();
             const newRefreshToken = crypto.randomUUID();
-            await storeToken(newAccessToken, userId);
-            await storeRefreshToken(newRefreshToken, userId);
+            try {
+                if (
+                    !(await rotateRefreshToken(
+                        refreshToken,
+                        newAccessToken,
+                        newRefreshToken,
+                    ))
+                ) {
+                    return c.json({ error: "invalid_grant" }, 400);
+                }
+            } catch (err) {
+                console.error("Refresh-token rotation failed:", err);
+                return c.json({ error: "service_unavailable" }, 503);
+            }
 
             return c.json({
                 access_token: newAccessToken,
@@ -456,7 +546,7 @@ export function createOAuthRouter() {
             return c.json({ error: "unsupported_grant_type" }, 400);
         }
 
-        if (!code) {
+        if (!code || !redirectUri) {
             return c.json({ error: "invalid_request" }, 400);
         }
 
@@ -468,43 +558,34 @@ export function createOAuthRouter() {
             return c.json({ error: "invalid_client" }, 401);
         }
 
-        // Atomically consume the auth code
-        const authCodeData = await consumeAuthCode(code);
-        if (!authCodeData) {
-            return c.json({ error: "invalid_grant" }, 400);
-        }
-
-        // Validate redirect_uri
-        if (redirectUri && redirectUri !== authCodeData.redirect_uri) {
-            return c.json({ error: "invalid_grant" }, 400);
-        }
-
-        // Validate PKCE
-        if (authCodeData.code_challenge) {
-            if (!codeVerifier) {
-                return c.json(
-                    {
-                        error: "invalid_request",
-                        error_description: "code_verifier required",
-                    },
-                    400,
-                );
-            }
-            const hash = base64URLEncode(
-                Buffer.from(
-                    crypto.createHash("sha256").update(codeVerifier).digest(),
-                ),
-            );
-            if (hash !== authCodeData.code_challenge) {
-                return c.json({ error: "invalid_grant" }, 400);
-            }
-        }
-
-        // Issue tokens linked to the authenticated user
         const accessToken = crypto.randomUUID();
         const refreshToken = crypto.randomUUID();
-        await storeToken(accessToken, authCodeData.user_id);
-        await storeRefreshToken(refreshToken, authCodeData.user_id);
+        const verifierHash = codeVerifier
+            ? await pkceHash(codeVerifier)
+            : undefined;
+        try {
+            if (
+                !(await redeemAuthCode(
+                    code,
+                    redirectUri,
+                    verifierHash,
+                    accessToken,
+                    refreshToken,
+                ))
+            ) {
+                return c.json({ error: "invalid_grant" }, 400);
+            }
+        } catch (err) {
+            console.error("Authorization-code exchange failed:", err);
+            return c.json(
+                {
+                    error: isServiceUnavailableError(err)
+                        ? "service_unavailable"
+                        : "token_exchange_failed",
+                },
+                503,
+            );
+        }
 
         return c.json({
             access_token: accessToken,

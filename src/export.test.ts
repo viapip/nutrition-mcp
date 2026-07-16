@@ -13,6 +13,7 @@ function meal(overrides: Partial<Meal> = {}): Meal {
         protein_g: 40,
         carbs_g: 10,
         fat_g: 20,
+        nutrition_source: null,
         notes: null,
         idempotency_key: null,
         ...overrides,

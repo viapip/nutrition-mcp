@@ -1,7 +1,55 @@
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+const hourFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dateFormatter(tz: string): Intl.DateTimeFormat {
+    let formatter = dateFormatters.get(tz);
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat("en-CA", {
+            timeZone: tz,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+        });
+        dateFormatters.set(tz, formatter);
+    }
+    return formatter;
+}
+
+function dateTimeFormatter(tz: string): Intl.DateTimeFormat {
+    let formatter = dateTimeFormatters.get(tz);
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: tz,
+            hour12: false,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+        });
+        dateTimeFormatters.set(tz, formatter);
+    }
+    return formatter;
+}
+
+function hourFormatter(tz: string): Intl.DateTimeFormat {
+    let formatter = hourFormatters.get(tz);
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: tz,
+            hour12: false,
+            hour: "2-digit",
+        });
+        hourFormatters.set(tz, formatter);
+    }
+    return formatter;
+}
+
 export function validateTz(tz: string): boolean {
     try {
-        // The TZ constructor throws RangeError on unknown identifiers.
-        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        dateFormatter(tz);
         return true;
     } catch {
         return false;
@@ -10,23 +58,13 @@ export function validateTz(tz: string): boolean {
 
 /** Current local date (YYYY-MM-DD) in the given IANA timezone. */
 export function todayInTz(tz: string): string {
-    return new Intl.DateTimeFormat("en-CA", {
-        timeZone: tz,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-    }).format(new Date());
+    return dateFormatter(tz).format(new Date());
 }
 
 /** Local date (YYYY-MM-DD) of an absolute instant in the given IANA timezone. */
 export function dateInTz(instant: Date | string, tz: string): string {
     const d = instant instanceof Date ? instant : new Date(instant);
-    return new Intl.DateTimeFormat("en-CA", {
-        timeZone: tz,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-    }).format(d);
+    return dateFormatter(tz).format(d);
 }
 
 /**
@@ -38,16 +76,7 @@ export function formatLocalDateTime(
     tz: string,
 ): string {
     const d = instant instanceof Date ? instant : new Date(instant);
-    const parts = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hour12: false,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-    }).formatToParts(d);
+    const parts = dateTimeFormatter(tz).formatToParts(d);
     const get = (t: string) => parts.find((p) => p.type === t)!.value;
     const hour = get("hour") === "24" ? "00" : get("hour");
     return `${get("year")}-${get("month")}-${get("day")} ${hour}:${get("minute")}:${get("second")}`;
@@ -56,11 +85,7 @@ export function formatLocalDateTime(
 /** Local hour (0-23) of an absolute instant in the given IANA timezone. */
 export function hourInTz(instant: Date | string, tz: string): number {
     const d = instant instanceof Date ? instant : new Date(instant);
-    const parts = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hour12: false,
-        hour: "2-digit",
-    }).formatToParts(d);
+    const parts = hourFormatter(tz).formatToParts(d);
     const h = Number(parts.find((p) => p.type === "hour")!.value);
     return h === 24 ? 0 : h;
 }
@@ -75,16 +100,7 @@ export function zonedDayStartUtc(date: string, tz: string): Date {
         throw new Error(`Invalid date string: ${date}`);
     }
     const utcGuess = Date.UTC(y, m - 1, d, 0, 0, 0);
-    const parts = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hour12: false,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-    }).formatToParts(new Date(utcGuess));
+    const parts = dateTimeFormatter(tz).formatToParts(new Date(utcGuess));
     const getPart = (t: string) =>
         Number(parts.find((p) => p.type === t)!.value);
     let lh = getPart("hour");
@@ -111,30 +127,6 @@ export function zonedNextDayStartUtc(date: string, tz: string): Date {
     next.setUTCDate(next.getUTCDate() + 1);
     const nextStr = next.toISOString().slice(0, 10);
     return zonedDayStartUtc(nextStr, tz);
-}
-
-/**
- * Validate a client-supplied `logged_at` ISO string: it must parse, and must
- * not be in the future beyond a small clock-skew tolerance. Prevents a
- * mis-dated entry from silently becoming the user's "latest" reading. `nowMs`
- * is injected for testability.
- */
-export function validateLoggedAt(
-    iso: string,
-    nowMs: number,
-    toleranceMs: number = 5 * 60 * 1000,
-): void {
-    const t = new Date(iso).getTime();
-    if (Number.isNaN(t)) {
-        throw new Error(
-            `Invalid logged_at timestamp: ${iso}. Use an ISO 8601 string.`,
-        );
-    }
-    if (t > nowMs + toleranceMs) {
-        throw new Error(
-            `logged_at is in the future (${iso}). Log the time the measurement was actually taken.`,
-        );
-    }
 }
 
 /** Shift a local YYYY-MM-DD date by N days, returning YYYY-MM-DD. No TZ needed. */

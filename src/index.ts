@@ -11,6 +11,7 @@ import {
     getLandingStats,
     getMealExportCsv,
     getSql,
+    isServiceUnavailableError,
     type LandingStats,
 } from "./db.js";
 import { getBaseUrl } from "./url.js";
@@ -154,12 +155,16 @@ app.get("/exports/:token/meals.csv", async (c) => {
 // the DB. The numbers move slowly, so a stale value for a few minutes is fine.
 const STATS_TTL_MS = 5 * 60 * 1000;
 let statsCache: { data: LandingStats; expiresAt: number } | null = null;
+let statsRefresh: Promise<LandingStats> | null = null;
 
 app.get("/api/stats", async (c) => {
     try {
         if (!statsCache || statsCache.expiresAt < Date.now()) {
+            statsRefresh ??= getLandingStats().finally(() => {
+                statsRefresh = null;
+            });
             statsCache = {
-                data: await getLandingStats(),
+                data: await statsRefresh,
                 expiresAt: Date.now() + STATS_TTL_MS,
             };
         }
@@ -247,6 +252,9 @@ app.get("/health", (c) => c.text("ok"));
 // Error handler
 app.onError((_err, c) => {
     console.error("Unhandled error:", _err);
+    if (isServiceUnavailableError(_err)) {
+        return c.json({ error: "service_unavailable" }, 503);
+    }
     return c.json({ error: "internal_server_error" }, 500);
 });
 
@@ -268,6 +276,22 @@ if (!process.env.BASE_URL) {
 // would 500 in confusing ways, so we exit rather than serve a broken server.
 try {
     await getSql()`alter table profiles add column if not exists llm_api_key text`;
+    await getSql()`alter table meals add column if not exists nutrition_source text`;
+    await getSql()`
+        do $$ begin
+            if not exists (select 1 from pg_constraint where conname = 'meals_nutrients_nonnegative') then
+                alter table meals add constraint meals_nutrients_nonnegative
+                    check (calories >= 0 and protein_g >= 0 and carbs_g >= 0 and fat_g >= 0) not valid;
+            end if;
+            if not exists (select 1 from pg_constraint where conname = 'meals_nutrition_source_valid') then
+                alter table meals add constraint meals_nutrition_source_valid
+                    check (nutrition_source in ('estimate', 'barcode', 'dish', 'manual')) not valid;
+            end if;
+            if not exists (select 1 from pg_constraint where conname = 'nutrition_goals_nonnegative') then
+                alter table nutrition_goals add constraint nutrition_goals_nonnegative
+                    check (daily_calories >= 0 and daily_protein_g >= 0 and daily_carbs_g >= 0 and daily_fat_g >= 0 and daily_water_ml >= 0) not valid;
+            end if;
+        end $$`;
     await getSql()`
         create table if not exists dishes (
             id uuid primary key default gen_random_uuid(),
@@ -283,6 +307,13 @@ try {
             created_at timestamptz not null default now()
         )`;
     await getSql()`create unique index if not exists uniq_dishes_user_lower_name on dishes (user_id, lower(name))`;
+    await getSql()`
+        do $$ begin
+            if not exists (select 1 from pg_constraint where conname = 'dishes_nutrients_nonnegative') then
+                alter table dishes add constraint dishes_nutrients_nonnegative
+                    check (calories >= 0 and protein_g >= 0 and carbs_g >= 0 and fat_g >= 0) not valid;
+            end if;
+        end $$`;
 } catch (err) {
     console.error("Startup migration failed:", err);
     process.exit(1);
@@ -297,6 +328,7 @@ try {
     await db`create index if not exists idx_meals_user_logged_at on meals (user_id, logged_at)`;
     await db`create index if not exists idx_water_log_user_logged_at on water_log (user_id, logged_at)`;
     await db`create index if not exists idx_weight_log_user_logged_at on weight_log (user_id, logged_at)`;
+    await db`create index if not exists idx_refresh_tokens_expires_at on refresh_tokens (expires_at)`;
     await db`drop index if exists idx_meals_user_id`;
     await db`drop index if exists idx_meals_logged_at`;
     await db`drop index if exists idx_water_log_user_id`;
@@ -309,7 +341,7 @@ try {
     console.error("Startup index migration failed:", err);
 }
 
-// Periodically delete expired meal-export files from the storage bucket.
+// Periodically delete expired exports/auth credentials and old analytics.
 startExportCleanup();
 
 // Exit cleanly on shutdown signals (e.g. deploys). /mcp is stateless — no

@@ -275,7 +275,21 @@ export async function signup(
 }
 
 export async function logout(): Promise<void> {
+    if (!MOCK) {
+        // Best-effort server revoke — logout must never fail the user.
+        try {
+            await request("/api/logout", { method: "POST" });
+        } catch {}
+    }
     await setToken(null);
+}
+
+export async function deleteAccount(): Promise<void> {
+    if (MOCK) return;
+    await request("/api/account", {
+        method: "DELETE",
+        body: JSON.stringify({ confirm: true }),
+    });
 }
 
 /** No date = today; past days are read-mostly (new logs always land "now"). */
@@ -297,18 +311,28 @@ export async function getStats(days = 30): Promise<StatsData> {
     return request<StatsData>(`/api/summary?days=${days}`);
 }
 
-/** Ход чата по SSE: onTool — прогресс инструментов; expo/fetch стримит на нативе. */
+/** Ход чата по SSE: onTool — прогресс инструментов, onDelta — токены финального
+ * ответа по мере генерации, onReset — сбросить показанный черновик (nudge).
+ * expo/fetch стримит на нативе. */
 export async function sendChat(
     messages: ChatMessage[],
     onTool?: (name: string) => void,
     signal?: AbortSignal,
     turnKey?: string,
+    onDelta?: (text: string) => void,
+    onReset?: () => void,
 ): Promise<ChatReply> {
     if (MOCK) {
         onTool?.("propose_meal");
-        await new Promise((r) => setTimeout(r, 900));
+        await new Promise((r) => setTimeout(r, 500));
+        const msg = "Прикинул на глаз — проверь карточку.";
+        const words = msg.split(" ");
+        for (let i = 0; i < words.length; i++) {
+            onDelta?.((i ? " " : "") + words[i]);
+            await new Promise((r) => setTimeout(r, 55));
+        }
         return {
-            message: "Прикинул на глаз — проверь карточку.",
+            message: msg,
             proposals: [
                 {
                     description: "Овсянка с бананом",
@@ -360,9 +384,13 @@ export async function sendChat(
             if (!data) continue;
             const event = JSON.parse(data) as
                 | { type: "tool"; name: string }
+                | { type: "delta"; text: string }
+                | { type: "reset" }
                 | { type: "done"; message: string; proposals?: MealFields[] }
                 | { type: "error"; error: string };
             if (event.type === "tool") onTool?.(event.name);
+            else if (event.type === "delta") onDelta?.(event.text);
+            else if (event.type === "reset") onReset?.();
             else if (event.type === "done") {
                 return {
                     message: event.message,
@@ -411,6 +439,7 @@ export function newIdempotencyKey(): string {
 export async function addMeal(
     fields: MealFields,
     idempotencyKey?: string,
+    loggedAt?: string,
 ): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.meals.push({
@@ -421,14 +450,32 @@ export async function addMeal(
             protein_g: fields.protein_g ?? null,
             carbs_g: fields.carbs_g ?? null,
             fat_g: fields.fat_g ?? null,
-            logged_at: new Date().toISOString(),
+            logged_at: loggedAt ?? new Date().toISOString(),
         });
         return;
     }
     await request("/api/meals", {
         method: "POST",
-        body: JSON.stringify({ ...fields, idempotency_key: idempotencyKey }),
+        body: JSON.stringify({
+            ...fields,
+            idempotency_key: idempotencyKey,
+            ...(loggedAt ? { logged_at: loggedAt } : {}),
+        }),
     });
+}
+
+/** Совпадение по подстроке в описании — для «повторить недавнее». */
+export async function searchMeals(query: string): Promise<MealRow[]> {
+    if (MOCK) {
+        const q = query.toLowerCase();
+        return structuredClone(MOCK_DASHBOARD.meals).filter((m) =>
+            m.description.toLowerCase().includes(q),
+        );
+    }
+    const { meals } = await request<{ meals: MealRow[] }>(
+        `/api/meals/search?q=${encodeURIComponent(query)}`,
+    );
+    return meals;
 }
 
 export async function patchMeal(
@@ -457,13 +504,14 @@ export async function removeMeal(id: string): Promise<void> {
 export async function addWater(
     amountMl: number,
     idempotencyKey?: string,
+    loggedAt?: string,
 ): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.water.total_ml += amountMl;
         MOCK_DASHBOARD.water.entries.push({
             id: `mock-${Date.now()}`,
             amount_ml: amountMl,
-            logged_at: new Date().toISOString(),
+            logged_at: loggedAt ?? new Date().toISOString(),
         });
         return;
     }
@@ -472,6 +520,7 @@ export async function addWater(
         body: JSON.stringify({
             amount_ml: amountMl,
             idempotency_key: idempotencyKey,
+            ...(loggedAt ? { logged_at: loggedAt } : {}),
         }),
     });
 }

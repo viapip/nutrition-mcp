@@ -1,5 +1,10 @@
 import { test, expect } from "bun:test";
-import { buildDashboard, buildStats, mealFields } from "./api.js";
+import {
+    buildDashboard,
+    buildStats,
+    mealFields,
+    optionalLoggedAt,
+} from "./api.js";
 import type { Meal, WaterEntry, WeightEntry, NutritionGoals } from "./db.js";
 
 const meal = (over: Partial<Meal>): Meal => ({
@@ -12,6 +17,7 @@ const meal = (over: Partial<Meal>): Meal => ({
     protein_g: null,
     carbs_g: null,
     fat_g: null,
+    nutrition_source: null,
     notes: null,
     idempotency_key: null,
     ...over,
@@ -122,13 +128,27 @@ test("mealFields: PATCH null clears a macro, junk is rejected", () => {
             { description: "x", meal_type: "snack", calories: null },
             false,
         ),
-    ).toEqual({ description: "x", meal_type: "snack" });
+    ).toEqual({
+        description: "x",
+        meal_type: "snack",
+        nutrition_source: "manual",
+    });
     expect(() => mealFields({ calories: "junk" }, true)).toThrow();
     expect(() => mealFields({ calories: -1 }, true)).toThrow();
     // Empty/blank strings, booleans and arrays must not coerce to 0.
     for (const junk of ["", "  ", false, []]) {
         expect(() => mealFields({ calories: junk }, true)).toThrow();
     }
+});
+
+test("optionalLoggedAt preserves a valid timestamp and rejects bad input", () => {
+    const now = Date.parse("2026-07-15T12:00:00.000Z");
+    expect(optionalLoggedAt(undefined, now)).toBeUndefined();
+    expect(optionalLoggedAt("2026-07-14T19:30:00.000Z", now)).toBe(
+        "2026-07-14T19:30:00.000Z",
+    );
+    expect(() => optionalLoggedAt("2026-99-99T00:00:00.000Z", now)).toThrow();
+    expect(() => optionalLoggedAt(false, now)).toThrow();
 });
 
 test("buildStats: day fill, pending-today streak, frequent meals", () => {

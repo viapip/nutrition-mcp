@@ -62,6 +62,31 @@ function mealTypeNow(): MealType {
     return "snack";
 }
 
+// Бэкдейт нового приёма: часов назад от момента выбора (0 = сейчас).
+const WHEN_OPTIONS: { label: string; hoursAgo: number }[] = [
+    { label: "Сейчас", hoursAgo: 0 },
+    { label: "−1 ч", hoursAgo: 1 },
+    { label: "−3 ч", hoursAgo: 3 },
+    { label: "Вчера", hoursAgo: 24 },
+];
+
+/** «Сегодня/Вчера/DD.MM, HH:MM» в локальном времени — что уйдёт на сервер. */
+function whenLabel(d: Date): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dayKey = (x: Date) =>
+        `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const prefix =
+        dayKey(d) === dayKey(today)
+            ? "Сегодня"
+            : dayKey(d) === dayKey(yesterday)
+              ? "Вчера"
+              : `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`;
+    return `${prefix}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** Alert is a no-op on web — fall back to window.confirm there. */
 function confirmDelete(title: string, onYes: () => void) {
     if (Platform.OS === "web") {
@@ -335,6 +360,12 @@ function MealForm({
     const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
     const [dishes, setDishes] = useState<Dish[]>([]);
     const [remember, setRemember] = useState(false);
+    // Бэкдейт нового приёма: конкретную дату считаем в момент тапа (Date.now
+    // в рендере запрещён), подпись под чипами совпадает с тем, что уйдёт.
+    const [when, setWhen] = useState<{ hoursAgo: number; at: Date | null }>({
+        hoursAgo: 0,
+        at: null,
+    });
     // ref-замок: busy — async-стейт, быстрый двойной тап проскакивает до
     // ре-рендера и шлёт две записи.
     const lock = useRef(false);
@@ -430,12 +461,16 @@ function MealForm({
             if (meal) {
                 await patchMeal(meal.id, fields);
             } else {
-                // Ключ привязан к payload: ретрай тех же данных дедупится
-                // сервером, а исправленные перед повтором — пишутся заново.
-                const sig = JSON.stringify(fields);
+                // Ключ привязан к payload (включая выбранное время): ретрай тех
+                // же данных дедупится сервером, а смена времени/чисел — новый ключ.
+                const loggedAt = when.at?.toISOString();
+                const sig = JSON.stringify({
+                    ...fields,
+                    loggedAt: loggedAt ?? null,
+                });
                 if (saveKey.current?.sig !== sig)
                     saveKey.current = { sig, key: newIdempotencyKey() };
-                await addMeal(fields, saveKey.current.key);
+                await addMeal(fields, saveKey.current.key, loggedAt);
             }
             // Приём записан — блюдо в каталог фоном; его сбой не рушит сохранение.
             if (remember) {
@@ -610,6 +645,75 @@ function MealForm({
                     );
                 })}
             </View>
+            {!meal && (
+                <View style={styles.field}>
+                    <Text
+                        style={[
+                            styles.fieldLabel,
+                            { color: theme.inkSecondary },
+                        ]}
+                    >
+                        Когда
+                    </Text>
+                    <View style={styles.typeRow}>
+                        {WHEN_OPTIONS.map((o) => {
+                            const active = o.hoursAgo === when.hoursAgo;
+                            return (
+                                <Pressable
+                                    key={o.hoursAgo}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected: active }}
+                                    onPress={() => {
+                                        tapBuzz();
+                                        setWhen({
+                                            hoursAgo: o.hoursAgo,
+                                            at:
+                                                o.hoursAgo === 0
+                                                    ? null
+                                                    : new Date(
+                                                          Date.now() -
+                                                              o.hoursAgo *
+                                                                  60 *
+                                                                  60 *
+                                                                  1000,
+                                                      ),
+                                        });
+                                    }}
+                                    style={[
+                                        styles.typeChip,
+                                        {
+                                            backgroundColor: active
+                                                ? theme.accent
+                                                : theme.surface,
+                                        },
+                                    ]}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.typeChipText,
+                                            {
+                                                color: active
+                                                    ? theme.onAccent
+                                                    : theme.inkSecondary,
+                                                fontFamily: active
+                                                    ? Fonts.sansSemiBold
+                                                    : Fonts.sansMedium,
+                                            },
+                                        ]}
+                                    >
+                                        {o.label}
+                                    </Text>
+                                </Pressable>
+                            );
+                        })}
+                    </View>
+                    {when.at && (
+                        <Text style={[styles.hint, { color: theme.inkMuted }]}>
+                            {whenLabel(when.at)}
+                        </Text>
+                    )}
+                </View>
+            )}
             <View style={styles.numRow}>
                 <View style={styles.numCell}>
                     <Field

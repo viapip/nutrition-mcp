@@ -7,12 +7,16 @@ import {
     signInUser,
     signUpUser,
     insertMeal,
+    insertWater,
+    searchMeals,
     listDishes,
     insertDish,
     updateDish,
     deleteDish,
     consumeAuthCode,
     consumeRefreshToken,
+    redeemAuthCode,
+    rotateRefreshToken,
     getUserIdByToken,
     createMealExport,
     getMealExportCsv,
@@ -223,7 +227,10 @@ describe("signUpUser", () => {
             await signUpUser("a@b.com", "pw123456");
             throw new Error("should have thrown");
         } catch (err) {
-            expect((err as Error).message).toBe("Sign-up failed");
+            expect((err as Error).message).toBe(
+                "Sign-up failed: database_unavailable",
+            );
+            expect((err as Error).message).not.toContain("10.0.0.5");
         }
     });
 
@@ -252,6 +259,13 @@ describe("resolveGoogleUser", () => {
         const calls = installFakeSql([{ rows: [{ id: "user-1" }] }]);
         expect(await resolveGoogleUser("sub-1", "a@b.com")).toBe("user-1");
         expect(calls.length).toBe(1);
+    });
+
+    test("maps lookup outages to a stable public error", async () => {
+        installFakeSql([{ error: new Error("socket closed") }]);
+        expect(resolveGoogleUser("sub-1", "a@b.com")).rejects.toThrow(
+            "database_unavailable",
+        );
     });
 
     test("links a password account by verified email when it has no sub", async () => {
@@ -327,6 +341,7 @@ describe("insertMeal idempotency", () => {
         const result = await insertMeal("user-1", {
             description: "Soup",
             meal_type: "lunch",
+            idempotency_key: "retry-key",
         });
         expect(result.deduplicated).toBe(true);
         expect(result.meal.id).toBe("meal-1");
@@ -337,15 +352,19 @@ describe("insertMeal idempotency", () => {
     });
 
     test("normalizes driver types on the way out", async () => {
-        installFakeSql([{ rows: [mealRow({ idempotency_key: null })] }]);
+        const calls = installFakeSql([
+            { rows: [mealRow({ idempotency_key: null })] },
+        ]);
         const { meal, deduplicated } = await insertMeal("user-1", {
             description: "Soup",
             meal_type: "lunch",
+            logged_at: "2026-07-07T10:00:00.000Z",
         });
         expect(deduplicated).toBe(false);
         expect(meal.logged_at).toBe("2026-07-07T10:00:00.000Z");
         expect(meal.protein_g).toBe(12.5);
         expect(meal.carbs_g).toBeNull();
+        expect(calls[0]!.values).toContain("2026-07-07T10:00:00.000Z");
     });
 
     test("other insert errors are not swallowed", async () => {
@@ -354,6 +373,37 @@ describe("insertMeal idempotency", () => {
             insertMeal("user-1", { description: "Soup", meal_type: "lunch" }),
         ).rejects.toThrow("Failed to insert meal");
     });
+});
+
+test("insertWater persists a client-supplied logged_at", async () => {
+    const loggedAt = "2026-07-06T18:30:00.000Z";
+    const calls = installFakeSql([
+        {
+            rows: [
+                {
+                    id: "water-1",
+                    user_id: "user-1",
+                    amount_ml: 250,
+                    logged_at: new Date(loggedAt),
+                    notes: null,
+                    created_at: new Date("2026-07-07T10:00:00.000Z"),
+                    idempotency_key: null,
+                },
+            ],
+        },
+    ]);
+    const { entry } = await insertWater("user-1", {
+        amount_ml: 250,
+        logged_at: loggedAt,
+    });
+    expect(entry.logged_at).toBe(loggedAt);
+    expect(calls[0]!.values).toContain(loggedAt);
+});
+
+test("searchMeals treats SQL wildcard characters literally", async () => {
+    const calls = installFakeSql([{ rows: [] }]);
+    expect(await searchMeals("user-1", "100%_real")).toEqual([]);
+    expect(calls[0]!.values).toContain("%100\\%\\_real%");
 });
 
 // ---------- Dishes catalog ----------
@@ -429,7 +479,7 @@ describe("dishes CRUD", () => {
         installFakeSql([{ rows: [] }]);
         expect(
             updateDish("user-1", "ghost", { calories: 100 }),
-        ).rejects.toThrow("Failed to update dish");
+        ).rejects.toThrow("dish not found");
     });
 
     test("deleteDish reports whether a row was removed", async () => {
@@ -491,6 +541,105 @@ describe("consumeRefreshToken", () => {
     });
 });
 
+describe("atomic OAuth exchange", () => {
+    test("a redirect mismatch leaves the authorization code untouched", async () => {
+        const calls = installFakeSql([
+            {
+                rows: [
+                    {
+                        redirect_uri: "https://good/cb",
+                        user_id: "user-1",
+                        code_challenge: null,
+                    },
+                ],
+            },
+        ]);
+        expect(
+            await redeemAuthCode(
+                "code",
+                "https://bad/cb",
+                undefined,
+                "access",
+                "refresh",
+            ),
+        ).toBe(false);
+        expect(calls.map((call) => call.text)).toEqual([
+            "begin",
+            expect.stringContaining("select redirect_uri"),
+        ]);
+    });
+
+    test("a PKCE mismatch leaves the authorization code untouched", async () => {
+        const calls = installFakeSql([
+            {
+                rows: [
+                    {
+                        redirect_uri: "https://good/cb",
+                        user_id: "user-1",
+                        code_challenge: "expected-hash",
+                    },
+                ],
+            },
+        ]);
+        expect(
+            await redeemAuthCode(
+                "code",
+                "https://good/cb",
+                "wrong-hash",
+                "access",
+                "refresh",
+            ),
+        ).toBe(false);
+        expect(calls).toHaveLength(2);
+    });
+
+    test("a valid code is consumed with both replacement tokens atomically", async () => {
+        const calls = installFakeSql([
+            {
+                rows: [
+                    {
+                        redirect_uri: "https://good/cb",
+                        user_id: "user-1",
+                        code_challenge: "expected-hash",
+                    },
+                ],
+            },
+            { rows: [] },
+            { rows: [] },
+            { rows: [] },
+        ]);
+        expect(
+            await redeemAuthCode(
+                "code",
+                "https://good/cb",
+                "expected-hash",
+                "access",
+                "refresh",
+            ),
+        ).toBe(true);
+        expect(calls[0]!.text).toBe("begin");
+        expect(calls[2]!.text).toContain("delete from auth_codes");
+        expect(calls[3]!.text).toContain("insert into oauth_tokens");
+        expect(calls[4]!.text).toContain("insert into refresh_tokens");
+    });
+
+    test("refresh rotation deletes and inserts both replacements atomically", async () => {
+        const calls = installFakeSql([
+            { rows: [{ user_id: "user-1" }] },
+            { rows: [] },
+            { rows: [] },
+            { rows: [] },
+        ]);
+        expect(
+            await rotateRefreshToken("old", "new-access", "new-refresh"),
+        ).toBe(true);
+        expect(calls[0]!.text).toBe("begin");
+        expect(calls[2]!.text).toContain("delete from refresh_tokens");
+        expect(calls[3]!.text).toContain("insert into oauth_tokens");
+        expect(calls[4]!.text).toContain("insert into refresh_tokens");
+    });
+});
+
 test("getUserIdByToken treats expired tokens as absent", async () => {
     const calls = installFakeSql([{ rows: [] }]);
     expect(await getUserIdByToken("stale")).toBeNull();
@@ -522,9 +671,9 @@ describe("meal exports", () => {
         ).rejects.toThrow("Failed to store export");
     });
 
-    test("getMealExportCsv treats a database error as a missing export", async () => {
+    test("getMealExportCsv surfaces a database outage", async () => {
         installFakeSql([{ error: new Error("connection refused") }]);
-        expect(await getMealExportCsv("tok")).toBeNull();
+        expect(getMealExportCsv("tok")).rejects.toThrow("database_unavailable");
     });
 
     test("sweep swallows database errors and reports zero removed", async () => {
@@ -543,15 +692,20 @@ describe("meal exports", () => {
         expect(await getMealExportCsv("tok")).toBeNull();
     });
 
-    test("sweep deletes by expiry in a single statement", async () => {
+    test("sweep deletes all bounded-retention rows in one transaction", async () => {
         const calls = installFakeSql([
             { rows: [{ token: "a" }, { token: "b" }] },
+            { rows: [] },
+            { rows: [] },
+            { rows: [] },
+            { rows: [] },
         ]);
         expect(await sweepExpiredMealExports()).toBe(2);
-        expect(calls.length).toBe(1);
-        expect(calls[0]!.text.toLowerCase()).toContain(
+        expect(calls.length).toBe(6);
+        expect(calls[1]!.text.toLowerCase()).toContain(
             "delete from meal_exports",
         );
+        expect(calls[5]!.text.toLowerCase()).toContain("tool_analytics");
     });
 });
 

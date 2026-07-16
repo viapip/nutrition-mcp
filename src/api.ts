@@ -1,5 +1,4 @@
-import { Hono } from "hono";
-import crypto from "node:crypto";
+import { Hono, type Context } from "hono";
 import {
     signInUser,
     signUpUser,
@@ -27,6 +26,13 @@ import {
     insertDish,
     updateDish,
     deleteDish,
+    deleteAllUserData,
+    revokeToken,
+    searchMeals,
+    isServiceUnavailableError,
+    isValidationError,
+    isConflictError,
+    NotFoundError,
     type Meal,
     type MealInput,
     type DishInput,
@@ -38,6 +44,12 @@ import { authenticateBearer, rateLimit } from "./middleware.js";
 import { loginRateLimited } from "./oauth.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { todayInTz, shiftLocalDate, hourInTz, dateInTz } from "./tz.js";
+import {
+    isNutritionSource,
+    nonNegativeNumber,
+    validateDate,
+    validateLoggedAt,
+} from "./validate.js";
 import {
     buildDailyBuckets,
     currentStreak,
@@ -70,6 +82,16 @@ function idempotencyKey(body: Record<string, unknown>): string | undefined {
     return typeof k === "string" && k.length > 0 && k.length <= 200
         ? k
         : undefined;
+}
+
+export function optionalLoggedAt(
+    value: unknown,
+    nowMs: number = Date.now(),
+): string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string") throw new Error("bad logged_at");
+    validateLoggedAt(value, nowMs);
+    return value;
 }
 
 /** Aggregates one day of logs into the shape the mobile dashboard renders. */
@@ -145,6 +167,7 @@ export function buildDashboard(
             protein_g: m.protein_g,
             carbs_g: m.carbs_g,
             fat_g: m.fat_g,
+            nutrition_source: m.nutrition_source,
             logged_at: m.logged_at,
         })),
     };
@@ -208,6 +231,7 @@ export function buildStats(
             protein_g: latest.protein_g,
             carbs_g: latest.carbs_g,
             fat_g: latest.fat_g,
+            nutrition_source: latest.nutrition_source,
             count,
         }));
 
@@ -260,15 +284,18 @@ const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"] as const;
  * Zero is valid (e.g. 0 g of fat, a 0-calorie drink); negatives are rejected.
  */
 function posNum(v: unknown): number {
-    // Reject non-numeric inputs before Number() coerces them: "", "  ", false,
-    // [] all become 0 and would silently overwrite a field with zero.
-    if (typeof v !== "number") {
-        if (typeof v !== "string" || v.trim() === "")
-            throw new Error("bad number");
-    }
-    const n = Number(v);
-    if (!Number.isFinite(n) || n < 0) throw new Error("bad number");
+    return nonNegativeNumber(v);
+}
+
+function positiveNum(v: unknown): number {
+    const n = nonNegativeNumber(v);
+    if (n === 0) throw new Error("bad number");
     return n;
+}
+
+function serviceUnavailable(c: Context, err: unknown): Response | null {
+    if (!isServiceUnavailableError(err)) return null;
+    return c.json({ error: "service_unavailable" }, 503);
 }
 
 /** Extracts meal fields from a request body; `partial` allows omitting all. */
@@ -296,6 +323,18 @@ export function mealFields(
         } else {
             out[k] = posNum(body[k]);
         }
+    }
+    if (body.nutrition_source !== undefined) {
+        if (
+            body.nutrition_source !== null &&
+            !isNutritionSource(body.nutrition_source)
+        ) {
+            throw new Error("bad nutrition_source");
+        }
+        out.nutrition_source = body.nutrition_source as
+            MealInput["nutrition_source"] | undefined;
+    } else if (!partial) {
+        out.nutrition_source = "manual";
     }
     return out;
 }
@@ -334,7 +373,7 @@ export function dishFields(
 
 /** kg from the request body → integer grams, rejecting implausible values. */
 function weightGrams(v: unknown): number {
-    const g = Math.round(posNum(v) * 1000);
+    const g = Math.round(positiveNum(v) * 1000);
     if (!isPlausibleWeightGrams(g)) throw new Error("implausible weight");
     return g;
 }
@@ -382,7 +421,9 @@ export function createApiRouter() {
             const token = crypto.randomUUID();
             await storeToken(token, userId);
             return c.json({ token });
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_credentials" }, 401);
         }
     });
@@ -417,7 +458,9 @@ export function createApiRouter() {
             const token = crypto.randomUUID();
             await storeToken(token, userId);
             return c.json({ token });
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             // Generic on purpose: a verbatim "user already registered" lets an
             // unauthenticated caller enumerate which emails have accounts.
             return c.json({ error: "signup_failed" }, 400);
@@ -432,13 +475,12 @@ export function createApiRouter() {
         const q = c.req.query("date");
         let day = today;
         if (q !== undefined) {
-            // Regex catches the shape, the round-trip catches 2026-02-31.
-            const real =
-                /^\d{4}-\d{2}-\d{2}$/.test(q) &&
-                new Date(`${q}T12:00:00Z`).toISOString().slice(0, 10) === q;
-            if (!real || q > today) {
+            try {
+                validateDate(q);
+            } catch {
                 return c.json({ error: "bad date" }, 400);
             }
+            if (q > today) return c.json({ error: "bad date" }, 400);
             day = q;
         }
         const [meals, water, weights, latest, goals] = await Promise.all([
@@ -481,16 +523,34 @@ export function createApiRouter() {
 
     // ----- manual editing (the chat logs things, these correct them) -----
 
+    api.get("/api/meals/search", authenticateBearer, rateLimit, async (c) => {
+        const query = c.req.query("q")?.trim() ?? "";
+        if (!query || query.length > 200) {
+            return c.json({ error: "invalid_request" }, 400);
+        }
+        try {
+            const meals = await searchMeals(c.get("userId") as string, query);
+            return c.json({ meals });
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
+            throw err;
+        }
+    });
+
     api.post("/api/meals", authenticateBearer, rateLimit, async (c) => {
         try {
             const body = await jsonBody(c);
             const fields = mealFields(body, false);
             const { meal } = await insertMeal(c.get("userId") as string, {
                 ...(fields as MealInput),
+                logged_at: optionalLoggedAt(body.logged_at),
                 idempotency_key: idempotencyKey(body),
             });
             return c.json({ meal }, 201);
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_request" }, 400);
         }
     });
@@ -509,8 +569,15 @@ export function createApiRouter() {
                 fields,
             );
             return c.json({ meal });
-        } catch {
-            return c.json({ error: "not_found" }, 404);
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
+            if (err instanceof NotFoundError)
+                return c.json({ error: "not_found" }, 404);
+            if (isConflictError(err)) return c.json({ error: "conflict" }, 409);
+            if (isValidationError(err))
+                return c.json({ error: "invalid_request" }, 400);
+            throw err;
         }
     });
 
@@ -528,11 +595,14 @@ export function createApiRouter() {
         try {
             const body = await jsonBody(c);
             const { entry } = await insertWater(c.get("userId") as string, {
-                amount_ml: posNum(body.amount_ml),
+                amount_ml: positiveNum(body.amount_ml),
+                logged_at: optionalLoggedAt(body.logged_at),
                 idempotency_key: idempotencyKey(body),
             });
             return c.json({ entry }, 201);
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_request" }, 400);
         }
     });
@@ -555,7 +625,9 @@ export function createApiRouter() {
                 idempotency_key: idempotencyKey(body),
             });
             return c.json({ entry }, 201);
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_request" }, 400);
         }
     });
@@ -575,8 +647,15 @@ export function createApiRouter() {
                 { weight_g: weightG },
             );
             return c.json({ entry });
-        } catch {
-            return c.json({ error: "not_found" }, 404);
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
+            if (err instanceof NotFoundError)
+                return c.json({ error: "not_found" }, 404);
+            if (isConflictError(err)) return c.json({ error: "conflict" }, 409);
+            if (isValidationError(err))
+                return c.json({ error: "invalid_request" }, 400);
+            throw err;
         }
     });
 
@@ -617,7 +696,9 @@ export function createApiRouter() {
                 fields as DishInput,
             );
             return c.json({ dish });
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_request" }, 400);
         }
     });
@@ -636,8 +717,15 @@ export function createApiRouter() {
                 fields,
             );
             return c.json({ dish });
-        } catch {
-            return c.json({ error: "not_found" }, 404);
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
+            if (err instanceof NotFoundError)
+                return c.json({ error: "not_found" }, 404);
+            if (isConflictError(err)) return c.json({ error: "conflict" }, 409);
+            if (isValidationError(err))
+                return c.json({ error: "invalid_request" }, 400);
+            throw err;
         }
     });
 
@@ -677,7 +765,9 @@ export function createApiRouter() {
                 has_llm_key: !!key,
                 chat_available: !!key || !!process.env.LLM_API_KEY,
             });
-        } catch {
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
             return c.json({ error: "invalid_request" }, 400);
         }
     });
@@ -702,9 +792,33 @@ export function createApiRouter() {
                 },
             );
             return c.json({ goals });
+        } catch (err) {
+            const unavailable = serviceUnavailable(c, err);
+            if (unavailable) return unavailable;
+            return c.json({ error: "invalid_request" }, 400);
+        }
+    });
+
+    api.post("/api/logout", authenticateBearer, async (c) => {
+        await revokeToken(
+            c.get("accessToken") as string,
+            c.get("userId") as string,
+        );
+        return c.json({ ok: true });
+    });
+
+    api.delete("/api/account", authenticateBearer, rateLimit, async (c) => {
+        let body: Record<string, unknown>;
+        try {
+            body = await jsonBody(c);
         } catch {
             return c.json({ error: "invalid_request" }, 400);
         }
+        if (body.confirm !== true) {
+            return c.json({ error: "confirmation_required" }, 400);
+        }
+        await deleteAllUserData(c.get("userId") as string);
+        return c.json({ ok: true });
     });
 
     return api;

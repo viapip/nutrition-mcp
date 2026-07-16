@@ -9,7 +9,7 @@ import {
     deleteMeal,
     updateMeal,
     deleteAllUserData,
-    upsertNutritionGoals,
+    patchNutritionGoals,
     getNutritionGoals,
     insertWater,
     getWaterByDate,
@@ -25,19 +25,15 @@ import {
     getPreferredWeightUnit,
     upsertProfile,
     getProfile,
+    searchMeals,
     type Meal,
     type NutritionGoals,
     type WaterEntry,
     type WeightEntry,
+    type NutritionGoalsInput,
 } from "./db.js";
 import { withAnalytics } from "./analytics.js";
-import {
-    todayInTz,
-    validateTz,
-    shiftLocalDate,
-    dateInTz,
-    validateLoggedAt,
-} from "./tz.js";
+import { todayInTz, validateTz, shiftLocalDate, dateInTz } from "./tz.js";
 import {
     buildDailyBuckets,
     computeTrends,
@@ -56,6 +52,12 @@ import {
 } from "./units.js";
 import { exportMeals } from "./export.js";
 import { normalizeBarcode, lookupBarcode, formatFoodResult } from "./foods.js";
+import {
+    nonNegativeNumber,
+    validateDate,
+    validateDateRange,
+    validateLoggedAt,
+} from "./validate.js";
 
 interface DailyTotals {
     calories: number;
@@ -231,19 +233,28 @@ function registerTools(server: McpServer, userId: string) {
                     .describe(
                         "Type of meal (breakfast, lunch, dinner, or snack). Always ask the user if not provided.",
                     ),
-                calories: z.coerce
+                calories: z
                     .number()
+                    .min(0)
                     .optional()
                     .describe("Total calories"),
-                protein_g: z.coerce
+                protein_g: z
                     .number()
+                    .min(0)
                     .optional()
                     .describe("Protein in grams"),
-                carbs_g: z.coerce
+                carbs_g: z
                     .number()
+                    .min(0)
                     .optional()
                     .describe("Carbohydrates in grams"),
-                fat_g: z.coerce.number().optional().describe("Fat in grams"),
+                fat_g: z.number().min(0).optional().describe("Fat in grams"),
+                nutrition_source: z
+                    .enum(["estimate", "barcode", "dish", "manual"])
+                    .optional()
+                    .describe(
+                        "Where the nutrition values came from (defaults to estimate).",
+                    ),
                 logged_at: z
                     .string()
                     .optional()
@@ -257,7 +268,7 @@ function registerTools(server: McpServer, userId: string) {
                     .max(255)
                     .optional()
                     .describe(
-                        "Optional stable key for safe retries. You normally don't need to set this: when omitted, the server derives a stable key from the meal content (including logged_at), so replaying the identical call returns the original meal instead of duplicating it. Pass a UUID only to force-override that behavior. Do NOT reuse a key for genuinely different meals.",
+                        "Stable client-supplied key for retry deduplication. Without one, retries may create another meal. Do NOT reuse a key for genuinely different meals.",
                     ),
             },
         },
@@ -267,10 +278,19 @@ function registerTools(server: McpServer, userId: string) {
                 async () => {
                     if (args.logged_at !== undefined)
                         validateLoggedAt(args.logged_at, Date.now());
-                    const { meal, deduplicated } = await insertMeal(
-                        userId,
-                        args,
-                    );
+                    for (const key of [
+                        "calories",
+                        "protein_g",
+                        "carbs_g",
+                        "fat_g",
+                    ] as const) {
+                        if (args[key] !== undefined)
+                            args[key] = nonNegativeNumber(args[key]);
+                    }
+                    const { meal, deduplicated } = await insertMeal(userId, {
+                        ...args,
+                        nutrition_source: args.nutrition_source ?? "estimate",
+                    });
                     const header = deduplicated
                         ? "Meal already logged (idempotent retry):"
                         : "Meal logged:";
@@ -442,6 +462,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_meals_by_date",
                 async () => {
+                    validateDate(date);
                     const tz = await getUserTimezone(userId);
                     const meals = await getMealsByDate(userId, date, tz);
                     if (meals.length === 0) {
@@ -484,6 +505,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_meals_by_date_range",
                 async () => {
+                    validateDateRange(start_date, end_date);
                     const tz = await getUserTimezone(userId);
                     const meals = await getMealsInRange(
                         userId,
@@ -538,6 +560,49 @@ function registerTools(server: McpServer, userId: string) {
     );
 
     server.registerTool(
+        "search_meals",
+        {
+            title: "Search Meal History",
+            description:
+                "Search meal descriptions across the user's history. Returns the newest matches first.",
+            annotations: {
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
+            },
+            inputSchema: {
+                query: z.string().min(1).max(200),
+                limit: z.coerce.number().int().min(1).max(100).optional(),
+            },
+        },
+        async ({ query, limit }) => {
+            return withAnalytics(
+                "search_meals",
+                async () => {
+                    if (!query.trim()) throw new Error("query required");
+                    const meals = await searchMeals(
+                        userId,
+                        query.trim(),
+                        limit ?? 20,
+                    );
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: meals.length
+                                    ? meals.map(formatMeal).join("\n\n---\n\n")
+                                    : `No meals found matching "${query}".`,
+                            },
+                        ],
+                    };
+                },
+                { userId },
+            );
+        },
+    );
+
+    server.registerTool(
         "get_nutrition_summary",
         {
             title: "Get Nutrition Summary",
@@ -557,6 +622,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_nutrition_summary",
                 async () => {
+                    validateDateRange(start_date, end_date);
                     const tz = await getUserTimezone(userId);
                     const [meals, water, goals] = await Promise.all([
                         getMealsInRange(userId, start_date, end_date, tz),
@@ -636,31 +702,31 @@ function registerTools(server: McpServer, userId: string) {
                 openWorldHint: false,
             },
             inputSchema: {
-                daily_calories: z.coerce
+                daily_calories: z
                     .number()
                     .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily calorie target (kcal). Null to clear."),
-                daily_protein_g: z.coerce
+                daily_protein_g: z
                     .number()
                     .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily protein target (grams). Null to clear."),
-                daily_carbs_g: z.coerce
+                daily_carbs_g: z
                     .number()
                     .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily carbs target (grams). Null to clear."),
-                daily_fat_g: z.coerce
+                daily_fat_g: z
                     .number()
                     .min(0)
                     .nullable()
                     .optional()
                     .describe("Daily fat target (grams). Null to clear."),
-                daily_water_ml: z.coerce
+                daily_water_ml: z
                     .number()
                     .min(0)
                     .nullable()
@@ -668,7 +734,7 @@ function registerTools(server: McpServer, userId: string) {
                     .describe(
                         "Daily water target (milliliters). Null to clear.",
                     ),
-                target_weight: z.coerce
+                target_weight: z
                     .number()
                     .positive()
                     .nullable()
@@ -688,52 +754,38 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "set_nutrition_goals",
                 async () => {
-                    const [existing, preferredUnit] = await Promise.all([
-                        getNutritionGoals(userId),
-                        getPreferredWeightUnit(userId),
-                    ]);
+                    const preferredUnit = await getPreferredWeightUnit(userId);
+                    const patch: NutritionGoalsInput = {};
+                    for (const key of [
+                        "daily_calories",
+                        "daily_protein_g",
+                        "daily_carbs_g",
+                        "daily_fat_g",
+                        "daily_water_ml",
+                    ] as const) {
+                        if (args[key] !== undefined) patch[key] = args[key];
+                    }
                     // Only demand a unit when actually writing a numeric target.
-                    let target_weight_g: number | null;
-                    if (args.target_weight === undefined) {
-                        target_weight_g = existing?.target_weight_g ?? null;
-                    } else if (args.target_weight === null) {
-                        target_weight_g = null;
+                    if (args.target_weight === null) {
+                        patch.target_weight_g = null;
                     } else {
-                        const writeUnit = await resolveWriteWeightUnit(
-                            userId,
-                            args.unit,
-                        );
-                        target_weight_g = toGrams(
-                            args.target_weight,
-                            writeUnit,
-                        );
-                        assertPlausibleWeight(target_weight_g, writeUnit);
+                        if (args.target_weight !== undefined) {
+                            const writeUnit = await resolveWriteWeightUnit(
+                                userId,
+                                args.unit,
+                            );
+                            patch.target_weight_g = toGrams(
+                                args.target_weight,
+                                writeUnit,
+                            );
+                            assertPlausibleWeight(
+                                patch.target_weight_g,
+                                writeUnit,
+                            );
+                        }
                     }
                     const displayUnit = args.unit ?? preferredUnit ?? "kg";
-                    const merged = {
-                        daily_calories:
-                            args.daily_calories === undefined
-                                ? (existing?.daily_calories ?? null)
-                                : args.daily_calories,
-                        daily_protein_g:
-                            args.daily_protein_g === undefined
-                                ? (existing?.daily_protein_g ?? null)
-                                : args.daily_protein_g,
-                        daily_carbs_g:
-                            args.daily_carbs_g === undefined
-                                ? (existing?.daily_carbs_g ?? null)
-                                : args.daily_carbs_g,
-                        daily_fat_g:
-                            args.daily_fat_g === undefined
-                                ? (existing?.daily_fat_g ?? null)
-                                : args.daily_fat_g,
-                        daily_water_ml:
-                            args.daily_water_ml === undefined
-                                ? (existing?.daily_water_ml ?? null)
-                                : args.daily_water_ml,
-                        target_weight_g,
-                    };
-                    const goals = await upsertNutritionGoals(userId, merged);
+                    const goals = await patchNutritionGoals(userId, patch);
                     return {
                         content: [
                             {
@@ -808,6 +860,7 @@ function registerTools(server: McpServer, userId: string) {
                 async () => {
                     const tz = await getUserTimezone(userId);
                     const targetDate = date ?? todayInTz(tz);
+                    validateDate(targetDate);
                     const [meals, water, goals, latestWeight, weightPref] =
                         await Promise.all([
                             getMealsByDate(userId, targetDate, tz),
@@ -879,10 +932,15 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "delete_meal",
                 async () => {
-                    await deleteMeal(userId, id);
+                    const deleted = await deleteMeal(userId, id);
                     return {
                         content: [
-                            { type: "text", text: `Meal ${id} deleted.` },
+                            {
+                                type: "text",
+                                text: deleted
+                                    ? `Meal ${id} deleted.`
+                                    : `No meal found with id ${id}.`,
+                            },
                         ],
                     };
                 },
@@ -908,10 +966,14 @@ function registerTools(server: McpServer, userId: string) {
                 meal_type: z
                     .enum(["breakfast", "lunch", "dinner", "snack"])
                     .optional(),
-                calories: z.coerce.number().nullable().optional(),
-                protein_g: z.coerce.number().nullable().optional(),
-                carbs_g: z.coerce.number().nullable().optional(),
-                fat_g: z.coerce.number().nullable().optional(),
+                calories: z.number().min(0).nullable().optional(),
+                protein_g: z.number().min(0).nullable().optional(),
+                carbs_g: z.number().min(0).nullable().optional(),
+                fat_g: z.number().min(0).nullable().optional(),
+                nutrition_source: z
+                    .enum(["estimate", "barcode", "dish", "manual"])
+                    .nullable()
+                    .optional(),
                 logged_at: z.string().optional(),
                 notes: z.string().nullable().optional(),
             },
@@ -920,6 +982,17 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "update_meal",
                 async () => {
+                    if (fields.logged_at !== undefined)
+                        validateLoggedAt(fields.logged_at, Date.now());
+                    for (const key of [
+                        "calories",
+                        "protein_g",
+                        "carbs_g",
+                        "fat_g",
+                    ] as const) {
+                        if (fields[key] != null)
+                            fields[key] = nonNegativeNumber(fields[key]);
+                    }
                     const meal = await updateMeal(userId, id, fields);
                     return {
                         content: [
@@ -968,7 +1041,7 @@ function registerTools(server: McpServer, userId: string) {
                     .max(255)
                     .optional()
                     .describe(
-                        "Optional stable key for safe retries. You normally don't need to set this: when omitted, the server derives a stable key from the entry content (including logged_at), so replaying the identical call returns the original entry instead of duplicating it. Pass a UUID only to force-override that behavior. Do NOT reuse a key for genuinely different sips.",
+                        "Stable client-supplied key for retry deduplication. Without one, retries may create another entry. Do NOT reuse a key for genuinely different sips.",
                     ),
             },
         },
@@ -1071,6 +1144,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_water_by_date",
                 async () => {
+                    validateDate(date);
                     const tz = await getUserTimezone(userId);
                     const entries = await getWaterByDate(userId, date, tz);
                     if (entries.length === 0) {
@@ -1122,12 +1196,14 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "delete_water",
                 async () => {
-                    await deleteWater(userId, id);
+                    const deleted = await deleteWater(userId, id);
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: `Water entry ${id} deleted.`,
+                                text: deleted
+                                    ? `Water entry ${id} deleted.`
+                                    : `No water entry found with id ${id}.`,
                             },
                         ],
                     };
@@ -1178,7 +1254,7 @@ function registerTools(server: McpServer, userId: string) {
                     .max(255)
                     .optional()
                     .describe(
-                        "Optional stable key for safe retries. You normally don't need to set this: when omitted, the server derives a stable key from the entry content (including logged_at), so replaying the identical call returns the original entry instead of duplicating it. Pass a UUID only to force-override that behavior.",
+                        "Stable client-supplied key for retry deduplication. Without one, retries may create another entry.",
                     ),
             },
         },
@@ -1291,6 +1367,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_weight_by_date",
                 async () => {
+                    validateDate(date);
                     const [tz, weightPref] = await Promise.all([
                         getUserTimezone(userId),
                         getPreferredWeightUnit(userId),
@@ -1346,6 +1423,7 @@ function registerTools(server: McpServer, userId: string) {
             return withAnalytics(
                 "get_weight_by_date_range",
                 async () => {
+                    validateDateRange(start_date, end_date);
                     const [tz, weightPref] = await Promise.all([
                         getUserTimezone(userId),
                         getPreferredWeightUnit(userId),
@@ -1444,6 +1522,7 @@ function registerTools(server: McpServer, userId: string) {
                     ]);
                     const unit = weightPref ?? "kg";
                     const endDate = end_date ?? todayInTz(tz);
+                    validateDate(endDate);
                     const windowDays = days ?? 30;
                     const startDate = shiftLocalDate(
                         endDate,
@@ -1699,6 +1778,7 @@ function registerTools(server: McpServer, userId: string) {
                 async () => {
                     const tz = await getUserTimezone(userId);
                     const endDate = end_date ?? todayInTz(tz);
+                    validateDate(endDate);
                     const windowDays = days ?? 30;
                     const startDate = shiftLocalDate(
                         endDate,
@@ -1765,6 +1845,7 @@ function registerTools(server: McpServer, userId: string) {
                 async () => {
                     const tz = await getUserTimezone(userId);
                     const endDate = end_date ?? todayInTz(tz);
+                    validateDate(endDate);
                     const windowDays = days ?? 30;
                     const startDate = shiftLocalDate(
                         endDate,

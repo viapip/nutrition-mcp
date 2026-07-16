@@ -1,10 +1,14 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
+    Alert,
     KeyboardAvoidingView,
     Pressable,
     ScrollView,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     useColorScheme,
@@ -20,9 +24,50 @@ import {
     Spacing,
     type Theme,
 } from "@/constants/theme";
-import { getSettings, logout, saveLlmKey } from "@/lib/api";
+import {
+    deleteAccount,
+    getSettings,
+    logout,
+    saveLlmKey,
+    setToken,
+} from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth";
 import { successBuzz, tapBuzz } from "@/lib/haptics";
+
+// Foreground notifications should still surface a banner.
+Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+        shouldShowBanner: true,
+        shouldShowList: true,
+    }),
+});
+
+/** Локальные напоминания: время фиксированное (пикер — позже, если понадобится).
+ * Значение в AsyncStorage под key — id запланированного уведомления (есть id = включено). */
+const REMINDERS = [
+    {
+        key: "reminder_dinner",
+        label: "Записать ужин",
+        hint: "Каждый день в 20:00",
+        hour: 20,
+        minute: 0,
+        title: "Запиши ужин 🍽",
+        body: "Отметь, что было на ужин.",
+    },
+    {
+        key: "reminder_weight",
+        label: "Взвеситься утром",
+        hint: "Каждый день в 8:00",
+        hour: 8,
+        minute: 0,
+        title: "Пора взвеситься ⚖️",
+        body: "Утреннее взвешивание — лучший ориентир.",
+    },
+] as const;
+
+type Reminder = (typeof REMINDERS)[number];
 
 /** Status card: where the assistant's requests are billed right now. */
 function KeyStatus({ hasKey, theme }: { hasKey: boolean; theme: Theme }) {
@@ -88,6 +133,87 @@ export default function SettingsScreen() {
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<string | null>(null);
     const [focused, setFocused] = useState(false);
+    const [reminders, setReminders] = useState<Record<string, boolean>>({});
+    const [reminderNote, setReminderNote] = useState<string | null>(null);
+
+    // On = уже есть сохранённый id запланированного уведомления.
+    useEffect(() => {
+        void Promise.all(
+            REMINDERS.map((r) => AsyncStorage.getItem(r.key)),
+        ).then((ids) => {
+            setReminders(
+                Object.fromEntries(
+                    REMINDERS.map((r, i) => [r.key, ids[i] != null]),
+                ),
+            );
+        });
+    }, []);
+
+    const toggleReminder = async (r: Reminder, on: boolean) => {
+        setReminderNote(null);
+        try {
+            if (on) {
+                const granted =
+                    (await Notifications.getPermissionsAsync()).granted ||
+                    (await Notifications.requestPermissionsAsync()).granted;
+                if (!granted) {
+                    setReminderNote(
+                        "Разреши уведомления в настройках, чтобы включить напоминание.",
+                    );
+                    return; // остаётся выключенным
+                }
+                const id = await Notifications.scheduleNotificationAsync({
+                    content: { title: r.title, body: r.body },
+                    trigger: {
+                        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+                        hour: r.hour,
+                        minute: r.minute,
+                    },
+                });
+                await AsyncStorage.setItem(r.key, id);
+            } else {
+                const id = await AsyncStorage.getItem(r.key);
+                if (id)
+                    await Notifications.cancelScheduledNotificationAsync(id);
+                await AsyncStorage.removeItem(r.key);
+            }
+            setReminders((s) => ({ ...s, [r.key]: on }));
+        } catch {
+            setReminderNote(
+                "Не получилось изменить напоминание — попробуй ещё раз.",
+            );
+        }
+    };
+
+    const confirmDeleteAccount = () => {
+        tapBuzz();
+        Alert.alert(
+            "Удалить аккаунт?",
+            "Все данные будут стёрты безвозвратно. Это действие необратимо.",
+            [
+                { text: "Отмена", style: "cancel" },
+                {
+                    text: "Удалить",
+                    style: "destructive",
+                    onPress: () => void removeAccount(),
+                },
+            ],
+        );
+    };
+
+    const removeAccount = async () => {
+        try {
+            await deleteAccount();
+            await setToken(null);
+            router.replace("/login");
+        } catch (err) {
+            if (onError(err)) return;
+            Alert.alert(
+                "Не вышло",
+                "Не получилось удалить аккаунт. Попробуй позже.",
+            );
+        }
+    };
 
     useEffect(() => {
         getSettings()
@@ -318,6 +444,68 @@ export default function SettingsScreen() {
                             )}
                         </View>
 
+                        {/* Reminders */}
+                        <View
+                            style={[
+                                styles.form,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.eyebrow,
+                                    styles.sectionEyebrow,
+                                    { color: theme.inkMuted },
+                                ]}
+                            >
+                                НАПОМИНАНИЯ
+                            </Text>
+                            {REMINDERS.map((r) => (
+                                <View key={r.key} style={styles.remRow}>
+                                    <View style={styles.remText}>
+                                        <Text
+                                            style={[
+                                                styles.remLabel,
+                                                { color: theme.ink },
+                                            ]}
+                                        >
+                                            {r.label}
+                                        </Text>
+                                        <Text
+                                            style={[
+                                                styles.remHint,
+                                                { color: theme.inkMuted },
+                                            ]}
+                                        >
+                                            {r.hint}
+                                        </Text>
+                                    </View>
+                                    <Switch
+                                        value={!!reminders[r.key]}
+                                        onValueChange={(v) =>
+                                            void toggleReminder(r, v)
+                                        }
+                                        trackColor={{
+                                            false: theme.hairline,
+                                            true: theme.accent,
+                                        }}
+                                        thumbColor={theme.surfaceElevated}
+                                        ios_backgroundColor={theme.hairline}
+                                    />
+                                </View>
+                            ))}
+                            {reminderNote && (
+                                <Text
+                                    style={[
+                                        styles.fieldHint,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    {reminderNote}
+                                </Text>
+                            )}
+                        </View>
+
                         {/* Account */}
                         <Pressable
                             accessibilityRole="button"
@@ -347,6 +535,29 @@ export default function SettingsScreen() {
                                 ]}
                             >
                                 →
+                            </Text>
+                        </Pressable>
+
+                        {/* Danger zone */}
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Удалить аккаунт"
+                            onPress={confirmDeleteAccount}
+                            style={({ pressed }) => [
+                                styles.dangerBtn,
+                                {
+                                    borderTopColor: theme.hairline,
+                                    opacity: pressed ? 0.6 : 1,
+                                },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.dangerText,
+                                    { color: theme.danger },
+                                ]}
+                            >
+                                Удалить аккаунт
                             </Text>
                         </Pressable>
                     </View>
@@ -434,6 +645,16 @@ const styles = StyleSheet.create({
     removeBtn: { alignSelf: "center", paddingVertical: Spacing.sm },
     removeText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
     note: { fontFamily: Fonts.sansMedium, fontSize: 14, textAlign: "center" },
+    remRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: Spacing.md,
+        paddingVertical: Spacing.xs,
+    },
+    remText: { flex: 1, gap: 2 },
+    remLabel: { fontFamily: Fonts.sansMedium, fontSize: 15 },
+    remHint: { fontFamily: Fonts.sans, fontSize: 12, lineHeight: 17 },
     logoutRow: {
         flexDirection: "row",
         alignItems: "center",
@@ -442,4 +663,11 @@ const styles = StyleSheet.create({
     },
     logout: { fontFamily: Fonts.sansMedium, fontSize: 15 },
     logoutArrow: { fontFamily: Fonts.sansSemiBold, fontSize: 16 },
+    dangerBtn: {
+        marginTop: Spacing.lg,
+        paddingTop: Spacing.lg,
+        alignItems: "center",
+        borderTopWidth: 1,
+    },
+    dangerText: { fontFamily: Fonts.sansMedium, fontSize: 14 },
 });

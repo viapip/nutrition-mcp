@@ -1,5 +1,5 @@
 import { router, useFocusEffect, type Href } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Animated,
     Pressable,
@@ -20,7 +20,8 @@ import {
     type WeekDay,
 } from "@/components/charts";
 import { GoalsEditor, MealEditor, WeightEditor } from "@/components/editors";
-import { FadeIn, usePulse } from "@/components/motion";
+import { FadeIn, useCountUp, usePulse } from "@/components/motion";
+import { Spark } from "@/components/Spark";
 import {
     Colors,
     Fonts,
@@ -38,6 +39,7 @@ import {
     newIdempotencyKey,
     removeWater,
     type DashboardData,
+    type FrequentMeal,
     type MealRow,
 } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth";
@@ -62,6 +64,7 @@ let streakCache: {
     day: string;
     current: number;
     week: Record<string, WeekDay>;
+    frequent: FrequentMeal[];
 } | null = null;
 
 // Глобаль переживает logout — login.tsx сбрасывает, иначе виден чужой стрик
@@ -230,9 +233,11 @@ export default function DashboardScreen() {
     const [waterBusy, setWaterBusy] = useState(false);
     const waterLock = useRef(false);
     const repeatLock = useRef(false);
+    const freqLock = useRef(false);
     // Ключ-на-действие: держится до успеха, повтор того же — тот же ключ.
     const waterKey = useRef<{ ml: number; key: string } | null>(null);
     const repeatKey = useRef<{ id: string; key: string } | null>(null);
+    const freqKey = useRef<{ desc: string; key: string } | null>(null);
     const [mealEditor, setMealEditor] = useState<{
         visible: boolean;
         meal: MealRow | null;
@@ -243,6 +248,8 @@ export default function DashboardScreen() {
     }>({ visible: false, entry: null });
     const [goalsVisible, setGoalsVisible] = useState(false);
     const [streak, setStreak] = useState<number | null>(null);
+    // Топ-3 частых приёма из getStats — чипы быстрого повтора в пустом дне.
+    const [frequent, setFrequent] = useState<FrequentMeal[]>([]);
 
     // Один getStats кормит и бейдж стрика, и полосу недели. Отсекает
     // устаревший залп; версия по токену — ответ старой сессии не пишет кэш.
@@ -254,6 +261,7 @@ export default function DashboardScreen() {
         ) {
             setStreak(streakCache.current);
             setWeekByDate(streakCache.week);
+            setFrequent(streakCache.frequent);
             return;
         }
         const seq = ++statsSeq.current;
@@ -277,9 +285,16 @@ export default function DashboardScreen() {
                     over: goal != null && d.calories > goal,
                 };
             }
-            streakCache = { day: s.end, current: s.streak.current, week };
+            const freq = s.frequent.slice(0, 3);
+            streakCache = {
+                day: s.end,
+                current: s.streak.current,
+                week,
+                frequent: freq,
+            };
             setStreak(s.streak.current);
             setWeekByDate(week);
+            setFrequent(freq);
         } catch {
             // без статистики бейдж/полоса просто не показываются
         }
@@ -324,18 +339,41 @@ export default function DashboardScreen() {
         }
     }, [viewDate, todayDate, onError, loadStats]);
 
-    // Reload whenever the screen regains focus (e.g. returning from chat,
-    // where the assistant may have logged something).
+    // Свежие замыкания для фокус-эффекта: со стабильными deps он не должен
+    // переподписываться на каждую смену дня (иначе зря тянет getStats(30)).
+    // Рефы обновляем в эффекте без deps (не в рендере — react-hooks/refs): он
+    // бежит после каждого коммита, так .current свеж к следующему рефокусу.
+    const loadRef = useRef(load);
+    const loadStatsRef = useRef(loadStats);
+    const todayRef = useRef(todayDate);
+    useEffect(() => {
+        loadRef.current = load;
+        loadStatsRef.current = loadStats;
+        todayRef.current = todayDate;
+    });
+
+    // Смена просматриваемого дня (после маунта) тянет ТОЛЬКО дашборд —
+    // стрик и неделя от просмотра прошлого дня не меняются. Маунт покрывает
+    // фокус-эффект ниже, поэтому первый прогон пропускаем.
+    const firstDayRun = useRef(true);
+    useEffect(() => {
+        if (firstDayRun.current) {
+            firstDayRun.current = false;
+            return;
+        }
+        guard(() => void load());
+    }, [guard, load]);
+
+    // Реальный возврат фокуса (из чата/редактора): ассистент мог что-то
+    // записать — перезапрашиваем дашборд и инвалидируем стрик/неделю.
     useFocusEffect(
         useCallback(() => {
             guard(() => {
-                load();
-                // Возврат из чата мог изменить сегодняшнюю серию — не доверяем
-                // дневному кэшу, перезапрашиваем стрик и неделю.
+                void loadRef.current();
                 streakCache = null;
-                void loadStats(todayDate);
+                void loadStatsRef.current(todayRef.current);
             });
-        }, [guard, load, loadStats, todayDate]),
+        }, [guard]),
     );
 
     const refresh = useCallback(async () => {
@@ -471,6 +509,54 @@ export default function DashboardScreen() {
         [load, viewDate, loadStats, todayDate, onError],
     );
 
+    // Быстрый лог частого приёма из пустого дня — как repeatMeal, но ключ по
+    // описанию (у FrequentMeal нет id). Чип виден только на «сегодня».
+    // useCallback как у соседних хендлеров — react-hooks/globals терпит запись
+    // в streakCache только из стабильного колбэка, не из render-фазы.
+    const logFrequent = useCallback(
+        async (meal: FrequentMeal) => {
+            if (freqLock.current) return;
+            freqLock.current = true;
+            tapBuzz();
+            const key =
+                freqKey.current?.desc === meal.description
+                    ? freqKey.current
+                    : { desc: meal.description, key: newIdempotencyKey() };
+            freqKey.current = key;
+            try {
+                await addMeal(
+                    {
+                        description: meal.description,
+                        meal_type: meal.meal_type ?? "snack",
+                        calories: meal.calories,
+                        protein_g: meal.protein_g,
+                        carbs_g: meal.carbs_g,
+                        fat_g: meal.fat_g,
+                    },
+                    key.key,
+                );
+                freqKey.current = null;
+                successBuzz();
+                streakCache = null;
+                void loadStats(todayDate);
+                void load();
+            } catch (err) {
+                onError(err);
+            } finally {
+                freqLock.current = false;
+            }
+        },
+        [load, loadStats, todayDate, onError],
+    );
+
+    // Герой-цифра «оживает» count-up'ом при загрузке и смене дня.
+    const heroTarget = data
+        ? data.calories.goal == null
+            ? data.calories.eaten
+            : Math.abs(data.calories.goal - data.calories.eaten)
+        : 0;
+    const heroDisplay = useCountUp(heroTarget);
+
     if (!data) {
         if (!failed) return <DashboardSkeleton theme={theme} />;
         return (
@@ -510,7 +596,6 @@ export default function DashboardScreen() {
     const kcalGoal = data.calories.goal;
     const kcalEaten = data.calories.eaten;
     const kcalOver = kcalGoal != null && kcalEaten > kcalGoal;
-    const kcalLeft = kcalGoal != null ? kcalGoal - kcalEaten : null;
     const kcalPct = kcalGoal ? Math.min(kcalEaten / kcalGoal, 1) : 0;
     // Герой: остаток / перебор / просто съедено (когда цели нет)
     const heroEyebrow = kcalOver
@@ -520,7 +605,6 @@ export default function DashboardScreen() {
           : isToday
             ? "ОСТАЛОСЬ СЕГОДНЯ"
             : "ОСТАЛОСЬ";
-    const heroValue = kcalGoal == null ? kcalEaten : Math.abs(kcalLeft ?? 0);
     const heroSub =
         kcalGoal != null
             ? `${kcalEaten.toLocaleString("ru-RU")} из ${kcalGoal.toLocaleString("ru-RU")} ккал`
@@ -795,10 +879,19 @@ export default function DashboardScreen() {
                                         color: kcalOver
                                             ? theme.danger
                                             : theme.accent,
+                                        // Мятное свечение — фирменный акцент
+                                        textShadowColor: kcalOver
+                                            ? theme.danger
+                                            : theme.accent,
+                                        textShadowOffset: {
+                                            width: 0,
+                                            height: 0,
+                                        },
+                                        textShadowRadius: 16,
                                     },
                                 ]}
                             >
-                                {heroValue.toLocaleString("ru-RU")}
+                                {heroDisplay.toLocaleString("ru-RU")}
                             </Text>
                             <Text
                                 style={[
@@ -1188,6 +1281,12 @@ export default function DashboardScreen() {
                             {data.meals.length === 0 &&
                                 (isToday ? (
                                     <View style={styles.emptyMeals}>
+                                        <View style={styles.emptySpark}>
+                                            <Spark
+                                                size={26}
+                                                color={theme.accent}
+                                            />
+                                        </View>
                                         <Text
                                             style={[
                                                 styles.emptyMealsText,
@@ -1250,6 +1349,78 @@ export default function DashboardScreen() {
                                                 </Text>
                                             </Pressable>
                                         </View>
+                                        {frequent.length > 0 && (
+                                            <View style={styles.freqBlock}>
+                                                <Text
+                                                    style={[
+                                                        styles.cardLabel,
+                                                        {
+                                                            color: theme.inkMuted,
+                                                        },
+                                                    ]}
+                                                >
+                                                    ПОВТОРИТЬ ЧАСТОЕ
+                                                </Text>
+                                                <View style={styles.chipRow}>
+                                                    {frequent.map((m) => (
+                                                        <Pressable
+                                                            key={m.description}
+                                                            accessibilityRole="button"
+                                                            accessibilityLabel={`Записать: ${m.description}${m.calories != null ? `, ${m.calories} ккал` : ""}`}
+                                                            onPress={() =>
+                                                                void logFrequent(
+                                                                    m,
+                                                                )
+                                                            }
+                                                            style={({
+                                                                pressed,
+                                                            }) => [
+                                                                styles.chip,
+                                                                {
+                                                                    backgroundColor:
+                                                                        theme.accentSoft,
+                                                                    transform: [
+                                                                        {
+                                                                            scale: pressed
+                                                                                ? 0.96
+                                                                                : 1,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                            ]}
+                                                        >
+                                                            <Text
+                                                                style={[
+                                                                    styles.chipText,
+                                                                    {
+                                                                        color: theme.accent,
+                                                                    },
+                                                                ]}
+                                                                numberOfLines={
+                                                                    1
+                                                                }
+                                                            >
+                                                                {m.description}
+                                                                {m.calories !=
+                                                                    null && (
+                                                                    <Text
+                                                                        style={{
+                                                                            color: theme.inkMuted,
+                                                                        }}
+                                                                    >
+                                                                        {"  "}
+                                                                        {
+                                                                            m.calories
+                                                                        }{" "}
+                                                                        ккал
+                                                                    </Text>
+                                                                )}
+                                                            </Text>
+                                                        </Pressable>
+                                                    ))}
+                                                </View>
+                                            </View>
+                                        )}
                                     </View>
                                 ) : (
                                     <Text
@@ -1581,7 +1752,9 @@ const styles = StyleSheet.create({
     footnote: { fontFamily: Fonts.sans, fontSize: 12 },
     mealsCard: { gap: 0 },
     emptyMeals: { gap: Spacing.md, paddingVertical: Spacing.sm },
+    emptySpark: { alignItems: "center" },
     emptyMealsText: { fontFamily: Fonts.sans, fontSize: 14, lineHeight: 20 },
+    freqBlock: { gap: Spacing.sm },
     mealRow: {
         flexDirection: "row",
         alignItems: "center",

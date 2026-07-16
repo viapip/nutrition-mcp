@@ -46,6 +46,13 @@ create table nutrition_goals (
     daily_water_ml integer,
     -- Target body weight, stored canonically in grams.
     target_weight_g integer check (target_weight_g > 0),
+    constraint nutrition_goals_nonnegative check (
+        daily_calories >= 0
+        and daily_protein_g >= 0
+        and daily_carbs_g >= 0
+        and daily_fat_g >= 0
+        and daily_water_ml >= 0
+    ),
     updated_at timestamptz not null default now()
 );
 
@@ -61,8 +68,14 @@ create table meals (
     protein_g numeric,
     carbs_g numeric,
     fat_g numeric,
+    nutrition_source text constraint meals_nutrition_source_valid check (
+        nutrition_source in ('estimate', 'barcode', 'dish', 'manual')
+    ),
     notes text,
-    idempotency_key text
+    idempotency_key text,
+    constraint meals_nutrients_nonnegative check (
+        calories >= 0 and protein_g >= 0 and carbs_g >= 0 and fat_g >= 0
+    )
 );
 
 -- Covers "where user_id = ? and logged_at [range] order by logged_at".
@@ -89,6 +102,9 @@ create table dishes (
     protein_g numeric(6, 1),
     carbs_g numeric(6, 1),
     fat_g numeric(6, 1),
+    constraint dishes_nutrients_nonnegative check (
+        calories >= 0 and protein_g >= 0 and carbs_g >= 0 and fat_g >= 0
+    ),
     created_at timestamptz not null default now()
 );
 
@@ -152,6 +168,8 @@ create table refresh_tokens (
     expires_at timestamptz not null,
     created_at timestamptz not null default now()
 );
+
+create index idx_refresh_tokens_expires_at on refresh_tokens (expires_at);
 
 -- Short-lived authorization codes, consumed atomically on /token exchange.
 create table auth_codes (

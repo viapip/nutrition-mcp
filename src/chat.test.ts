@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { runChatTurn, executeTool } from "./chat.js";
+import { createChatRouter, runChatTurn, executeTool } from "./chat.js";
 import { setSqlForTests } from "./db.js";
 
 // Same scripted fake as db.test.ts: each db`...` call consumes the next step.
@@ -44,6 +44,56 @@ function fakeLlm(responses: unknown[]): unknown[] {
     }) as typeof fetch;
     return bodies;
 }
+
+function fakeLlmStreams(responses: unknown[][]): unknown[] {
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(init!.body as string));
+        const events = responses.shift() ?? [];
+        const body =
+            events
+                .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+                .join("") + "data: [DONE]\n\n";
+        return new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+        });
+    }) as typeof fetch;
+    return bodies;
+}
+
+test("SSE chat errors use the event contract before body parsing", async () => {
+    installFakeSql([{ rows: [{ user_id: "u1" }] }]);
+    const router = createChatRouter();
+    const response = await router.request("http://localhost/api/chat", {
+        method: "POST",
+        headers: {
+            accept: "text/event-stream",
+            authorization: "Bearer token",
+            "content-type": "application/json",
+        },
+        body: "{",
+    });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(await response.text()).toContain(
+        'data: {"type":"error","error":"invalid_request"}',
+    );
+});
+
+test("SSE chat auth failures use the event contract", async () => {
+    const response = await createChatRouter().request(
+        "http://localhost/api/chat",
+        {
+            method: "POST",
+            headers: { accept: "text/event-stream" },
+        },
+    );
+    expect(response.status).toBe(401);
+    expect(await response.text()).toContain(
+        'data: {"type":"error","error":"unauthorized"}',
+    );
+});
 
 const waterRow = {
     id: "w1",
@@ -107,6 +157,115 @@ test("runChatTurn executes a tool call and returns the final text", async () => 
     expect(second.messages.at(-1)!.role).toBe("tool");
 });
 
+test("runChatTurn assembles streamed tool chunks and forwards final deltas", async () => {
+    installFakeSql([{ rows: [] }, { rows: [waterRow] }]);
+    const bodies = fakeLlmStreams([
+        [
+            {
+                choices: [
+                    {
+                        delta: {
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    id: "c1",
+                                    function: { name: "log_" },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            {
+                choices: [
+                    {
+                        delta: {
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    function: {
+                                        name: "water",
+                                        arguments: '{"amount',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            {
+                choices: [
+                    {
+                        delta: {
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    function: { arguments: '_ml":300}' },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+        [
+            { choices: [{ delta: { content: "Saved " } }] },
+            { choices: [{ delta: { content: "300 ml." } }] },
+            {
+                choices: [],
+                usage: {
+                    prompt_tokens: 10,
+                    completion_tokens: 3,
+                    total_tokens: 13,
+                },
+            },
+        ],
+    ]);
+    const deltas: string[] = [];
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "log water" }],
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        (text) => deltas.push(text),
+    );
+
+    expect(reply.message).toBe("Saved 300 ml.");
+    expect(deltas).toEqual(["Saved ", "300 ml."]);
+    expect((bodies[0] as { stream: boolean }).stream).toBe(true);
+});
+
+test("invalid non-object tool arguments become a tool error", async () => {
+    installFakeSql([{ rows: [] }]);
+    const bodies = fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: { name: "log_water", arguments: "null" },
+                },
+            ],
+        },
+        { role: "assistant", content: "Please retry." },
+    ]);
+
+    await runChatTurn(
+        "u1",
+        [{ role: "user", content: "log water" }],
+        "test-key",
+    );
+    const second = bodies[1] as {
+        messages: { role: string; content: string }[];
+    };
+    expect(second.messages.at(-1)?.content).toContain(
+        "tool arguments must be a JSON object",
+    );
+});
+
 test("executeTool converts weight kg to grams and reports bad input", async () => {
     const calls = installFakeSql([
         {
@@ -155,7 +314,7 @@ test("executeTool threads a turn idempotency key into the write", async () => {
     expect(calls[0]!.values).toContain("turn-key-1");
 });
 
-test("executeTool set_goals merges with current goals", async () => {
+test("executeTool set_goals patches goals atomically", async () => {
     const goalsRow = {
         user_id: "u1",
         daily_calories: 2000,
@@ -167,7 +326,6 @@ test("executeTool set_goals merges with current goals", async () => {
         updated_at: "2026-07-07T10:00:00Z",
     };
     const calls = installFakeSql([
-        { rows: [goalsRow] }, // getNutritionGoals
         { rows: [{ ...goalsRow, daily_calories: 1800 }] }, // upsert returning
     ]);
     const res = JSON.parse(
@@ -175,9 +333,8 @@ test("executeTool set_goals merges with current goals", async () => {
     );
     expect(res.saved).toBe(true);
     // changed field is written, untouched ones survive the merge
-    expect(calls[1]!.values).toContain(1800);
-    expect(calls[1]!.values).toContain(150);
-    expect(calls[1]!.values).toContain(74000);
+    expect(calls[0]!.values).toContain(1800);
+    expect(calls[0]!.text).toContain("case when");
 });
 
 test("runChatTurn stops before running tools when the client aborted", async () => {
@@ -249,7 +406,7 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
         [{ role: "user", content: "log 300 ml water" }],
         "test-key",
     );
-    expect(reply.message).toContain("Записал —");
+    expect(reply.message).toContain("Saved —");
 });
 
 test("propose_meal returns a card and writes nothing to the database", async () => {
@@ -284,6 +441,7 @@ test("propose_meal returns a card and writes nothing to the database", async () 
             meal_type: "breakfast",
             calories: 320,
             protein_g: 9,
+            nutrition_source: "estimate",
         },
     ]);
     expect(reply.message).toContain("карточку");
@@ -316,13 +474,27 @@ test("prose claiming a proposal without a tool call gets nudged into propose_mea
         { role: "assistant", content: "Прикинула 75 ккал — проверь карточку." },
     ]);
 
+    const deltas: string[] = [];
+    let resets = 0;
     const reply = await runChatTurn(
         "u1",
         [{ role: "user", content: "Грам 150 черешни" }],
         "test-key",
+        undefined,
+        undefined,
+        undefined,
+        (text) => deltas.push(text),
+        () => {
+            resets += 1;
+        },
     );
     expect(reply.proposals).toEqual([
-        { description: "Черешня, 150 г", meal_type: "snack", calories: 75 },
+        {
+            description: "Черешня, 150 г",
+            meal_type: "snack",
+            calories: 75,
+            nutrition_source: "estimate",
+        },
     ]);
     // Round 2 request carries the corrective system message.
     const secondBody = llmBodies[1] as {
@@ -331,6 +503,8 @@ test("prose claiming a proposal without a tool call gets nudged into propose_mea
     const last = secondBody.messages[secondBody.messages.length - 1]!;
     expect(last.role).toBe("system");
     expect(last.content).toContain("CHECK FAILED");
+    expect(resets).toBe(1);
+    expect(deltas[0]).toContain("Подтвердите");
 });
 
 test("assistant consults the dish catalog before proposing a saved item", async () => {
@@ -387,6 +561,7 @@ test("assistant consults the dish catalog before proposing a saved item", async 
             protein_g: 30,
             carbs_g: 5,
             fat_g: 3,
+            nutrition_source: "estimate",
         },
     ]);
     expect(reply.message).toContain("коктейль");
