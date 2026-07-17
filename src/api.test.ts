@@ -1,11 +1,41 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import {
     buildDashboard,
     buildStats,
+    createApiRouter,
     mealFields,
     optionalLoggedAt,
 } from "./api.js";
-import type { Meal, WaterEntry, WeightEntry, NutritionGoals } from "./db.js";
+import {
+    setSqlForTests,
+    type Meal,
+    type WaterEntry,
+    type WeightEntry,
+    type NutritionGoals,
+} from "./db.js";
+
+interface SqlCall {
+    text: string;
+    values: unknown[];
+}
+
+function installApiSql(script: unknown[][]): SqlCall[] {
+    const calls: SqlCall[] = [];
+    setSqlForTests(((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = [...strings].join("?").trim();
+        calls.push({ text, values });
+        const rows = script.shift();
+        if (!rows) throw new Error(`unexpected query: ${text}`);
+        return Promise.resolve(rows);
+    }) as unknown);
+    return calls;
+}
+
+afterEach(() => {
+    setSqlForTests(() => {
+        throw new Error("no fake sql installed");
+    });
+});
 
 const meal = (over: Partial<Meal>): Meal => ({
     id: "m1",
@@ -115,6 +145,74 @@ test("buildDashboard with no data and no goals is all zeros/nulls", () => {
     expect(d.water.entries).toEqual([]);
     expect(d.weight).toEqual({ current_g: null, target_g: null, series: [] });
     expect(d.meals).toEqual([]);
+});
+
+test("past dashboard uses the latest weight even beyond its 30-day series", async () => {
+    const oldWeight = weight({
+        id: "old",
+        weight_g: 81500,
+        logged_at: "2026-03-01T08:00:00.000Z",
+    });
+    const calls = installApiSql([
+        [{ user_id: "u1" }],
+        [
+            {
+                user_id: "u1",
+                timezone: "UTC",
+                preferred_weight_unit: null,
+                llm_api_key: null,
+                created_at: "2026-01-01T00:00:00.000Z",
+                updated_at: "2026-01-01T00:00:00.000Z",
+            },
+        ],
+        [],
+        [],
+        [],
+        [oldWeight],
+        [],
+    ]);
+
+    const response = await createApiRouter().request(
+        "http://localhost/api/dashboard?date=2026-05-01",
+        { headers: { Authorization: "Bearer access" } },
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+        weight: {
+            current_g: number | null;
+            target_g: number | null;
+            series: unknown[];
+        };
+    };
+    expect(body.weight).toEqual({
+        current_g: 81500,
+        target_g: null,
+        series: [],
+    });
+
+    const rangeQuery = calls[4]!.text.toLowerCase();
+    const asOfQuery = calls[5]!.text.toLowerCase();
+    expect(rangeQuery).toContain("logged_at >=");
+    expect(asOfQuery).toContain("logged_at <");
+    expect(asOfQuery).not.toContain("logged_at >=");
+});
+
+test("POST /api/logout-all revokes every refresh token for the user", async () => {
+    const calls = installApiSql([[{ user_id: "u1" }], []]);
+    const response = await createApiRouter().request(
+        "http://localhost/api/logout-all",
+        {
+            method: "POST",
+            headers: { Authorization: "Bearer access" },
+        },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(calls[1]!.text.toLowerCase()).toContain(
+        "delete from refresh_tokens where user_id",
+    );
+    expect(calls[1]!.values).toEqual(["u1"]);
 });
 
 test("mealFields: PATCH null clears a macro, junk is rejected", () => {

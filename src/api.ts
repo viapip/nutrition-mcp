@@ -10,6 +10,7 @@ import {
     getWaterInRange,
     getWeightInRange,
     getLatestWeight,
+    getLatestWeightAsOf,
     getNutritionGoals,
     upsertNutritionGoals,
     getProfile,
@@ -28,6 +29,7 @@ import {
     deleteDish,
     deleteAllUserData,
     revokeToken,
+    revokeAllRefreshTokens,
     searchMeals,
     isServiceUnavailableError,
     isValidationError,
@@ -487,14 +489,15 @@ export function createApiRouter() {
             getMealsByDate(userId, day, tz),
             getWaterByDate(userId, day, tz),
             getWeightInRange(userId, shiftLocalDate(day, -30), day, tz),
-            getLatestWeight(userId),
+            day === today
+                ? getLatestWeight(userId)
+                : getLatestWeightAsOf(userId, day, tz),
             getNutritionGoals(userId),
         ]);
         // Browsing the past: "current weight" is the last reading known by
         // that day, not today's — otherwise the card contradicts the chart.
-        const asOf = day === today ? latest : (weights.at(-1) ?? null);
         return c.json(
-            buildDashboard(day, tz, meals, water, weights, asOf, goals),
+            buildDashboard(day, tz, meals, water, weights, latest, goals),
         );
     });
 
@@ -804,6 +807,11 @@ export function createApiRouter() {
             c.get("accessToken") as string,
             c.get("userId") as string,
         );
+        return c.json({ ok: true });
+    });
+
+    api.post("/api/logout-all", authenticateBearer, async (c) => {
+        await revokeAllRefreshTokens(c.get("userId") as string);
         return c.json({ ok: true });
     });
 

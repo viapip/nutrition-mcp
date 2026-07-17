@@ -16,6 +16,7 @@ import {
 } from "./db.js";
 import { getBaseUrl } from "./url.js";
 import { maskIp } from "./net.js";
+import { addCspNonce, contentSecurityPolicy, createCspNonce } from "./csp.js";
 
 const app = new Hono();
 
@@ -40,16 +41,23 @@ app.use("*", async (c, next) => {
 
 // Security headers
 app.use("*", async (c, next) => {
+    const nonce = createCspNonce();
     await next();
     c.header("X-Content-Type-Options", "nosniff");
     c.header("X-Frame-Options", "DENY");
     if (!c.res.headers.get("Content-Security-Policy")) {
-        c.header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self'; frame-ancestors 'none'",
-        );
+        c.header("Content-Security-Policy", contentSecurityPolicy(nonce));
     }
     c.header("Referrer-Policy", "no-referrer");
+
+    if (c.res.headers.get("Content-Type")?.startsWith("text/html")) {
+        const response = c.res;
+        c.res = new Response(addCspNonce(await response.text(), nonce), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+        });
+    }
 });
 
 // Body limit; /api/chat gets a higher cap for inline food photos (data URLs).

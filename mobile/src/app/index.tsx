@@ -58,6 +58,7 @@ const WATER_PRESETS = [150, 250, 500];
 // Экран статистики создаётся параллельно; typed routes подхватят маршрут
 // после генерации .expo/types — до тех пор нужен каст.
 const STATS_ROUTE = "/stats" as Href;
+const SEARCH_ROUTE = "/search" as Href;
 
 // Кэш стрика+недели по «сегодня» сервера (end); любая запись дня сбрасывает
 let streakCache: {
@@ -1249,27 +1250,44 @@ export default function DashboardScreen() {
                             <Text style={[styles.h2, { color: theme.ink }]}>
                                 Еда
                             </Text>
-                            {isToday && (
+                            <View style={styles.headerActions}>
                                 <Pressable
                                     accessibilityRole="button"
-                                    onPress={() =>
-                                        setMealEditor({
-                                            visible: true,
-                                            meal: null,
-                                        })
-                                    }
+                                    accessibilityLabel="Поиск по истории еды"
+                                    onPress={() => router.push(SEARCH_ROUTE)}
                                     hitSlop={8}
                                 >
                                     <Text
                                         style={[
                                             styles.headerAction,
-                                            { color: theme.accent },
+                                            { color: theme.inkMuted },
                                         ]}
                                     >
-                                        + Добавить
+                                        Поиск
                                     </Text>
                                 </Pressable>
-                            )}
+                                {isToday && (
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        onPress={() =>
+                                            setMealEditor({
+                                                visible: true,
+                                                meal: null,
+                                            })
+                                        }
+                                        hitSlop={8}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.headerAction,
+                                                { color: theme.accent },
+                                            ]}
+                                        >
+                                            + Добавить
+                                        </Text>
+                                    </Pressable>
+                                )}
+                            </View>
                         </View>
                         <View
                             style={[

@@ -22,6 +22,8 @@ import {
     getMealExportCsv,
     sweepExpiredMealExports,
     deleteAllUserData,
+    encryptLlmApiKey,
+    decryptLlmApiKey,
     DUMMY_PASSWORD_HASH,
 } from "./db.js";
 
@@ -131,6 +133,35 @@ test("sha256hex matches the digest oauth.ts sends to Google", () => {
     expect(sha256hex("abc")).toBe(
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
+});
+
+describe("LLM API key encryption", () => {
+    test("AES-GCM round-trips with a random IV when a secret is set", async () => {
+        const secret = "test-only-secret-with-enough-entropy";
+        const first = await encryptLlmApiKey("sk-sensitive", secret);
+        const second = await encryptLlmApiKey("sk-sensitive", secret);
+
+        expect(first).toStartWith("enc:v1:");
+        expect(second).toStartWith("enc:v1:");
+        expect(first).not.toBe(second);
+        expect(await decryptLlmApiKey(first, secret)).toBe("sk-sensitive");
+        expect(await decryptLlmApiKey(second, secret)).toBe("sk-sensitive");
+    });
+
+    test("legacy plaintext stays readable with and without a secret", async () => {
+        expect(await decryptLlmApiKey("legacy-key", "configured-secret")).toBe(
+            "legacy-key",
+        );
+        const previous = process.env.LLM_KEY_SECRET;
+        delete process.env.LLM_KEY_SECRET;
+        try {
+            expect(await decryptLlmApiKey("legacy-key")).toBe("legacy-key");
+            expect(await encryptLlmApiKey("legacy-key")).toBe("legacy-key");
+        } finally {
+            if (previous === undefined) delete process.env.LLM_KEY_SECRET;
+            else process.env.LLM_KEY_SECRET = previous;
+        }
+    });
 });
 
 // ---------- Password sign-in (bcrypt hashes imported from Supabase) ----------

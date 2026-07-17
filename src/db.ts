@@ -27,6 +27,17 @@ export function setSqlForTests(fake: unknown): void {
 
 function errMsg(err: unknown): string {
     console.error("[db] operation failed:", err);
+    return classifiedErrMsg(err);
+}
+
+function sensitiveErrMsg(err: unknown): string {
+    // Query parameters may contain an encrypted API key. Never pass the driver
+    // error object to the logger for this write path.
+    console.error("[db] sensitive operation failed");
+    return classifiedErrMsg(err);
+}
+
+function classifiedErrMsg(err: unknown): string {
     const code = (err as { code?: string } | null)?.code;
     if (code === "23505") return "conflict";
     if (code === "23514" || code === "22P02" || code === "22003") {
@@ -666,6 +677,62 @@ export async function deleteDish(userId: string, id: string): Promise<boolean> {
 
 // ---------- Profiles ----------
 
+const LLM_KEY_PREFIX = "enc:v1:";
+const LLM_KEY_AAD = new TextEncoder().encode("profiles.llm_api_key:enc:v1");
+
+async function llmEncryptionKey(secret: string): Promise<CryptoKey> {
+    const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(secret),
+    );
+    return crypto.subtle.importKey("raw", digest, "AES-GCM", false, [
+        "encrypt",
+        "decrypt",
+    ]);
+}
+
+export async function encryptLlmApiKey(
+    value: string | null,
+    secret: string | undefined = process.env.LLM_KEY_SECRET,
+): Promise<string | null> {
+    if (value == null || !secret) return value;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv, additionalData: LLM_KEY_AAD },
+        await llmEncryptionKey(secret),
+        new TextEncoder().encode(value),
+    );
+    return `${LLM_KEY_PREFIX}${Buffer.from(iv).toString("base64url")}:${Buffer.from(ciphertext).toString("base64url")}`;
+}
+
+export async function decryptLlmApiKey(
+    value: string | null,
+    secret: string | undefined = process.env.LLM_KEY_SECRET,
+): Promise<string | null> {
+    if (value == null || !value.startsWith(LLM_KEY_PREFIX)) return value;
+    if (!secret)
+        throw new Error("LLM_KEY_SECRET is required for encrypted keys");
+
+    const parts = value.slice(LLM_KEY_PREFIX.length).split(":");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+        throw new Error("Invalid encrypted LLM key");
+    }
+    try {
+        const plaintext = await crypto.subtle.decrypt(
+            {
+                name: "AES-GCM",
+                iv: Buffer.from(parts[0], "base64url"),
+                additionalData: LLM_KEY_AAD,
+            },
+            await llmEncryptionKey(secret),
+            Buffer.from(parts[1], "base64url"),
+        );
+        return new TextDecoder().decode(plaintext);
+    } catch {
+        throw new Error("Invalid encrypted LLM key");
+    }
+}
+
 export interface Profile {
     user_id: string;
     timezone: string;
@@ -675,13 +742,15 @@ export interface Profile {
     updated_at: string;
 }
 
-function mapProfile(row: Record<string, unknown>): Profile {
+async function mapProfile(row: Record<string, unknown>): Promise<Profile> {
     return {
         user_id: row.user_id as string,
         timezone: row.timezone as string,
         preferred_weight_unit:
             (row.preferred_weight_unit as WeightUnit | null) ?? null,
-        llm_api_key: (row.llm_api_key as string | null) ?? null,
+        llm_api_key: await decryptLlmApiKey(
+            (row.llm_api_key as string | null) ?? null,
+        ),
         created_at: iso(row.created_at),
         updated_at: iso(row.updated_at),
     };
@@ -692,7 +761,7 @@ export async function getProfile(userId: string): Promise<Profile | null> {
     try {
         const [row] = await db`
             select * from profiles where user_id = ${userId}`;
-        return row ? mapProfile(row) : null;
+        return row ? await mapProfile(row) : null;
     } catch (err) {
         throw new Error(`Failed to get profile: ${errMsg(err)}`);
     }
@@ -730,7 +799,9 @@ export async function upsertProfile(
     const unitProvided = patch.preferred_weight_unit !== undefined;
     const unit = patch.preferred_weight_unit ?? null;
     const keyProvided = patch.llm_api_key !== undefined;
-    const key = patch.llm_api_key ?? null;
+    const key = keyProvided
+        ? await encryptLlmApiKey(patch.llm_api_key ?? null)
+        : null;
 
     const db = getSql();
     try {
@@ -749,9 +820,9 @@ export async function upsertProfile(
                 end,
                 updated_at = now()
             returning *`;
-        return mapProfile(row);
+        return await mapProfile(row);
     } catch (err) {
-        throw new Error(`Failed to save profile: ${errMsg(err)}`);
+        throw new Error(`Failed to save profile: ${sensitiveErrMsg(err)}`);
     }
 }
 
@@ -1116,6 +1187,28 @@ export async function getLatestWeight(
     }
 }
 
+/** Most recent weight known by the end of a local calendar day. */
+export async function getLatestWeightAsOf(
+    userId: string,
+    date: string,
+    tz: string = "UTC",
+): Promise<WeightEntry | null> {
+    validateDateRange(date, date);
+    const endUtc = zonedNextDayStartUtc(date, tz);
+    const db = getSql();
+    try {
+        const [row] = await db`
+            select * from weight_log
+            where user_id = ${userId}
+              and logged_at < ${endUtc.toISOString()}
+            order by logged_at desc
+            limit 1`;
+        return row ? mapWeight(row) : null;
+    } catch (err) {
+        throw new Error(`Failed to get weight as of date: ${errMsg(err)}`);
+    }
+}
+
 export async function updateWeight(
     userId: string,
     id: string,
@@ -1233,6 +1326,15 @@ export async function revokeToken(
             where token = ${token} and user_id = ${userId}`;
     } catch (err) {
         throw new Error(`Failed to revoke token: ${errMsg(err)}`);
+    }
+}
+
+export async function revokeAllRefreshTokens(userId: string): Promise<void> {
+    const db = getSql();
+    try {
+        await db`delete from refresh_tokens where user_id = ${userId}`;
+    } catch (err) {
+        throw new Error(`Failed to revoke refresh tokens: ${errMsg(err)}`);
     }
 }
 

@@ -15,6 +15,7 @@ import {
     getWaterByDate,
     getWeightInRange,
     getLatestWeight,
+    getLatestWeightAsOf,
     getNutritionGoals,
     patchNutritionGoals,
     listDishes,
@@ -423,13 +424,14 @@ async function daySnapshot(userId: string, tz: string, date?: string) {
         getMealsByDate(userId, day, tz),
         getWaterByDate(userId, day, tz),
         getWeightInRange(userId, shiftLocalDate(day, -30), day, tz),
-        getLatestWeight(userId),
+        day === today
+            ? getLatestWeight(userId)
+            : getLatestWeightAsOf(userId, day, tz),
         getNutritionGoals(userId),
     ]);
     // Прошлый день: «текущий вес» — последнее известное к этому дню, а не
     // сегодняшнее, иначе карточка расходится с графиком (как /api/dashboard).
-    const asOf = day === today ? latest : (weights.at(-1) ?? null);
-    return buildDashboard(day, tz, meals, water, weights, asOf, goals);
+    return buildDashboard(day, tz, meals, water, weights, latest, goals);
 }
 
 /** Один tool call; ошибки уходят модели JSON-пейлоадом. idem делает
