@@ -1,4 +1,6 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LOGGED_AT_FUTURE_TOLERANCE_MS = 2 * 60 * 1000;
+const MAX_LOGGED_AT_AGE_MS = 365 * DAY_MS;
 const NUTRITION_SOURCES = ["estimate", "barcode", "dish", "manual"];
 const ISO_TIMESTAMP =
     /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -40,11 +42,11 @@ export function validateDateRange(
     return days;
 }
 
-/** Valid ISO instant, no calendar/time rollover, at most one day ahead. */
+/** Valid ISO instant, no calendar/time rollover, within the logging window. */
 export function validateLoggedAt(
     value: string,
     nowMs: number,
-    toleranceMs: number = DAY_MS,
+    toleranceMs: number = LOGGED_AT_FUTURE_TOLERANCE_MS,
 ): void {
     const match = ISO_TIMESTAMP.exec(value);
     const time = Date.parse(value);
@@ -66,6 +68,9 @@ export function validateLoggedAt(
     }
     if (time > nowMs + toleranceMs) {
         throw new Error(`logged_at is in the future (${value}).`);
+    }
+    if (time < nowMs - MAX_LOGGED_AT_AGE_MS) {
+        throw new Error(`logged_at is older than one year (${value}).`);
     }
 }
 

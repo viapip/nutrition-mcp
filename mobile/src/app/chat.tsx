@@ -47,8 +47,10 @@ import { useRequireAuth } from "@/lib/auth";
 import { tapBuzz, successBuzz } from "@/lib/haptics";
 
 /** Карточка «записать?» из propose_meal; resolved и idem живут только на
- * девайсе — idem даёт серверу дедупнуть повторный тап «Записать». */
+ * девайсе — idem даёт серверу дедупнуть повторный тап «Записать».
+ * logged_at приходит с сервера (ISO) — целевой момент записи, если не «сейчас». */
 type Proposal = MealFields & {
+    logged_at?: string;
     resolved?: "saved" | "declined";
     idem?: string;
 };
@@ -262,6 +264,42 @@ function stamped(
         : { role, content, at: Date.now() };
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Локальный день устройства как YYYY-MM-DD (в useState-инициализаторе). */
+function localTodayStr(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** «16 июля» из YYYY-MM-DD. */
+function formatDayShort(day: string): string {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("ru-RU", {
+        day: "numeric",
+        month: "long",
+    });
+}
+
+/** Момент записи карточки словами: «на вчера, 19:30» / «на 15 июля, 13:00».
+ * null, если это сегодня — тогда подпись прячем. */
+function proposalWhen(iso: string): string | null {
+    const d = new Date(iso);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return null;
+    const yst = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const time = d.toLocaleTimeString("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+    if (d.toDateString() === yst.toDateString()) return `на вчера, ${time}`;
+    const day = d.toLocaleDateString("ru-RU", {
+        day: "numeric",
+        month: "long",
+    });
+    return `на ${day}, ${time}`;
+}
+
 /** «Сегодня», «Вчера», иначе «5 июля» — для разделителей в ленте. */
 function dayLabel(at: number): string {
     const d = new Date(at);
@@ -322,6 +360,7 @@ function ProposalCard({
     onResolve: (save: boolean) => void;
 }) {
     const macros = macroLine(p);
+    const when = p.logged_at ? proposalWhen(p.logged_at) : null;
     return (
         <View style={[styles.card, { backgroundColor: theme.surfaceElevated }]}>
             <View style={styles.cardHead}>
@@ -337,6 +376,11 @@ function ProposalCard({
             <Text style={[styles.cardDesc, { color: theme.ink }]}>
                 {p.description}
             </Text>
+            {when && (
+                <Text style={[styles.cardWhen, { color: theme.accent }]}>
+                    {when}
+                </Text>
+            )}
             {!!macros && (
                 <Text
                     style={[styles.cardMacros, { color: theme.inkSecondary }]}
@@ -456,8 +500,13 @@ export default function ChatScreen() {
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
     const { guard, onError } = useRequireAuth();
     // Deep-link из виджета/quick actions: "camera" — сразу открыть съёмку,
-    // "text" — сфокусировать поле ввода.
-    const { compose } = useLocalSearchParams<{ compose?: string }>();
+    // "text" — сфокусировать поле ввода. date — день, с которого пришли.
+    const { compose, date } = useLocalSearchParams<{
+        compose?: string;
+        date?: string;
+    }>();
+    const [today] = useState(localTodayStr);
+    const viewingDay = date && date !== today ? date : null;
 
     const [messages, setMessages] = useState<Msg[]>([]);
     const [hydrated, setHydrated] = useState(false);
@@ -735,6 +784,28 @@ export default function ChatScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps -- openCamera/pickImage не мемоизированы; сброс по значению даёт один запуск на значение
     }, [compose]);
 
+    // Тихий контекст дня: если пришли с прошлого дня — вшиваем в первое
+    // сообщение пользователя payload (видимый пузырь не трогаем), чтобы
+    // ассистент относил новые записи без явной даты к этому дню.
+    const withDayContext = (msgs: ChatMessage[]): ChatMessage[] => {
+        if (!viewingDay) return msgs;
+        const i = msgs.findIndex((m) => m.role === "user");
+        if (i < 0) return msgs;
+        const prefix = `(Контекст: сейчас просматриваю день ${viewingDay}. Новые записи еды, воды и веса без явной даты относи к этому дню.) `;
+        return msgs.map((m, idx) => {
+            if (idx !== i) return m;
+            return typeof m.content === "string"
+                ? { role: m.role, content: prefix + m.content }
+                : {
+                      role: m.role,
+                      content: [
+                          { type: "text" as const, text: prefix },
+                          ...m.content,
+                      ],
+                  };
+        });
+    };
+
     // Один ход ассистента поверх готовой истории; и send, и retry идут сюда.
     // ref-замок: два быстрых тапа читают одно и то же устаревшее busy.
     const runLock = useRef(false);
@@ -752,7 +823,7 @@ export default function ChatScreen() {
             .find((m) => m.role === "user")?.turnKey;
         try {
             const reply = await sendChat(
-                await toPayload(slimHistory(next)),
+                await toPayload(withDayContext(slimHistory(next))),
                 (name) => setStatus(TOOL_STATUS[name] ?? "Думаю…"),
                 ctrl.signal,
                 turnKey,
@@ -869,6 +940,7 @@ export default function ChatScreen() {
         try {
             // p.idem дедупит повторный тап после потерянного ответа: если
             // строка уже вставлена, сервер вернёт её же, а не второй дубль.
+            // p.logged_at (если сервер прислал) — записать не «сейчас», а на дату.
             await addMeal(
                 {
                     description: p.description,
@@ -879,6 +951,7 @@ export default function ChatScreen() {
                     fat_g: p.fat_g ?? null,
                 },
                 p.idem,
+                p.logged_at,
             );
             successBuzz();
             markProposal(mi, pi, "saved");
@@ -970,7 +1043,7 @@ export default function ChatScreen() {
                     <View style={styles.header}>
                         <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel="Назад к дашборду"
+                            accessibilityLabel="Назад"
                             onPress={() => router.back()}
                             hitSlop={12}
                         >
@@ -980,7 +1053,7 @@ export default function ChatScreen() {
                                     { color: theme.inkSecondary },
                                 ]}
                             >
-                                ← Сегодня
+                                ← Назад
                             </Text>
                         </Pressable>
                         <Text
@@ -1418,6 +1491,25 @@ export default function ChatScreen() {
                         </Text>
                     )}
 
+                    {viewingDay && (
+                        <View
+                            style={[
+                                styles.dayBadge,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
+                            <Text
+                                style={[
+                                    styles.dayBadgeText,
+                                    { color: theme.inkSecondary },
+                                ]}
+                            >
+                                Просматривался день:{" "}
+                                {formatDayShort(viewingDay)}
+                            </Text>
+                        </View>
+                    )}
+
                     {/* Input bar */}
                     <View
                         style={[
@@ -1719,6 +1811,14 @@ const styles = StyleSheet.create({
         paddingHorizontal: Spacing.lg,
         paddingBottom: Spacing.sm,
     },
+    dayBadge: {
+        alignSelf: "center",
+        marginBottom: Spacing.sm,
+        paddingHorizontal: Spacing.md,
+        paddingVertical: 6,
+        borderRadius: Radii.pill,
+    },
+    dayBadgeText: { fontFamily: Fonts.sansMedium, fontSize: 12 },
     bubble: {
         maxWidth: "85%",
         borderRadius: Radii.lg,
@@ -1757,6 +1857,7 @@ const styles = StyleSheet.create({
     },
     cardKcal: { fontFamily: Fonts.sansSemiBold, fontSize: 14 },
     cardDesc: { fontFamily: Fonts.sansMedium, fontSize: 15, lineHeight: 21 },
+    cardWhen: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     cardMacros: { fontFamily: Fonts.sans, fontSize: 13 },
     cardStatus: { fontFamily: Fonts.sansMedium, fontSize: 13, marginTop: 2 },
     cardButtons: { flexDirection: "row", gap: Spacing.sm, marginTop: 4 },

@@ -21,7 +21,11 @@ interface SqlCall {
 
 function installApiSql(script: unknown[][]): SqlCall[] {
     const calls: SqlCall[] = [];
-    setSqlForTests(((strings: TemplateStringsArray, ...values: unknown[]) => {
+    setSqlForTests(((
+        strings: TemplateStringsArray | object,
+        ...values: unknown[]
+    ) => {
+        if (!Array.isArray(strings)) return strings;
         const text = [...strings].join("?").trim();
         calls.push({ text, values });
         const rows = script.shift();
@@ -247,6 +251,138 @@ test("optionalLoggedAt preserves a valid timestamp and rejects bad input", () =>
     );
     expect(() => optionalLoggedAt("2026-99-99T00:00:00.000Z", now)).toThrow();
     expect(() => optionalLoggedAt(false, now)).toThrow();
+    expect(() => optionalLoggedAt("2026-07-15T12:02:00.001Z", now)).toThrow(
+        "future",
+    );
+    expect(() => optionalLoggedAt("2025-07-15T11:59:59.999Z", now)).toThrow(
+        "older than one year",
+    );
+});
+
+test("meal, water and weight POSTs persist a valid logged_at", async () => {
+    const loggedAt = new Date(Date.now() - 60_000).toISOString();
+    const cases = [
+        {
+            path: "/api/meals",
+            body: { description: "Суп", meal_type: "lunch" },
+            row: meal({ description: "Суп", logged_at: loggedAt }),
+        },
+        {
+            path: "/api/water",
+            body: { amount_ml: 300 },
+            row: water({ amount_ml: 300, logged_at: loggedAt }),
+        },
+        {
+            path: "/api/weight",
+            body: { weight_kg: 78.2 },
+            row: weight({ weight_g: 78200, logged_at: loggedAt }),
+        },
+    ];
+
+    for (const testCase of cases) {
+        const calls = installApiSql([[{ user_id: "u1" }], [testCase.row]]);
+        const response = await createApiRouter().request(
+            `http://localhost${testCase.path}`,
+            {
+                method: "POST",
+                headers: {
+                    Authorization: "Bearer access",
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    ...testCase.body,
+                    logged_at: loggedAt,
+                    idempotency_key: "same-request",
+                }),
+            },
+        );
+        expect(response.status).toBe(201);
+        expect(calls[1]!.values).toContain(loggedAt);
+        expect(calls[1]!.values).toContain("same-request");
+    }
+});
+
+test("meal, water and weight POSTs reject future and too-old logged_at", async () => {
+    const timestamps = [
+        new Date(Date.now() + 3 * 60_000).toISOString(),
+        new Date(Date.now() - 366 * 24 * 60 * 60_000).toISOString(),
+    ];
+    const cases = [
+        ["/api/meals", { description: "Суп", meal_type: "lunch" }],
+        ["/api/water", { amount_ml: 300 }],
+        ["/api/weight", { weight_kg: 78.2 }],
+    ] as const;
+
+    for (const loggedAt of timestamps) {
+        for (const [path, body] of cases) {
+            installApiSql([[{ user_id: "u1" }]]);
+            const response = await createApiRouter().request(
+                `http://localhost${path}`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: "Bearer access",
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ ...body, logged_at: loggedAt }),
+                },
+            );
+            expect(response.status).toBe(400);
+            expect(await response.json()).toEqual({
+                error: "invalid_request",
+            });
+        }
+    }
+});
+
+test("PATCH /api/meals/:id updates logged_at", async () => {
+    const loggedAt = new Date(Date.now() - 60_000).toISOString();
+    const calls = installApiSql([
+        [{ user_id: "u1" }],
+        [meal({ logged_at: loggedAt })],
+    ]);
+
+    const response = await createApiRouter().request(
+        "http://localhost/api/meals/m1",
+        {
+            method: "PATCH",
+            headers: {
+                Authorization: "Bearer access",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ logged_at: loggedAt }),
+        },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+        meal: { id: "m1", logged_at: loggedAt },
+    });
+    expect(calls[1]!.values[0]).toEqual({ logged_at: loggedAt });
+});
+
+test("PATCH /api/meals/:id rejects future and too-old logged_at", async () => {
+    const timestamps = [
+        new Date(Date.now() + 3 * 60_000).toISOString(),
+        new Date(Date.now() - 366 * 24 * 60 * 60_000).toISOString(),
+    ];
+
+    for (const loggedAt of timestamps) {
+        installApiSql([[{ user_id: "u1" }]]);
+        const response = await createApiRouter().request(
+            "http://localhost/api/meals/m1",
+            {
+                method: "PATCH",
+                headers: {
+                    Authorization: "Bearer access",
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ logged_at: loggedAt }),
+            },
+        );
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "invalid_request" });
+    }
 });
 
 test("buildStats: day fill, pending-today streak, frequent meals", () => {

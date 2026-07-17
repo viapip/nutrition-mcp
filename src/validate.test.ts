@@ -26,13 +26,13 @@ test("nutrients accept zero but reject negatives and coercion junk", () => {
     expect(() => nonNegativeNumber(false)).toThrow("non-negative");
 });
 
-test("logged_at accepts backfill and one-day skew, rejects rollover and future", () => {
+test("logged_at accepts one-year backfill and clock skew, rejects old and future", () => {
     const now = Date.parse("2026-07-15T12:00:00.000Z");
     expect(() =>
-        validateLoggedAt("1999-01-01T00:00:00.000Z", now),
+        validateLoggedAt("2025-07-15T12:00:00.000Z", now),
     ).not.toThrow();
     expect(() =>
-        validateLoggedAt("2026-07-16T12:00:00.000Z", now),
+        validateLoggedAt("2026-07-15T12:02:00.000Z", now),
     ).not.toThrow();
     expect(() =>
         validateLoggedAt("2026-07-14T19:30:00+03:00", now),
@@ -49,7 +49,10 @@ test("logged_at accepts backfill and one-day skew, rejects rollover and future",
     expect(() => validateLoggedAt("2026-07-16T12:00:00.0001Z", now)).toThrow(
         "Invalid logged_at",
     );
-    expect(() => validateLoggedAt("2026-07-16T12:00:00.001Z", now)).toThrow(
+    expect(() => validateLoggedAt("2026-07-15T12:02:00.001Z", now)).toThrow(
         "future",
+    );
+    expect(() => validateLoggedAt("2025-07-15T11:59:59.999Z", now)).toThrow(
+        "older than one year",
     );
 });

@@ -23,7 +23,7 @@ import {
     type MealInput,
     type DishInput,
 } from "./db.js";
-import { buildDashboard, mealFields } from "./api.js";
+import { buildDashboard, mealFields, optionalLoggedAt } from "./api.js";
 import { normalizeBarcode, lookupBarcode } from "./foods.js";
 import { isPlausibleWeightGrams } from "./units.js";
 import { authenticateBearer, rateLimit } from "./middleware.js";
@@ -65,6 +65,7 @@ const MAX_IMAGE_DATA_URL_CHARS = 1_500_000; // ~1MB decoded
 export interface MealProposal {
     description: string;
     meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+    logged_at?: string;
     calories?: number;
     protein_g?: number;
     carbs_g?: number;
@@ -109,7 +110,7 @@ const TOOLS = [
         function: {
             name: "log_meal",
             description:
-                "Log a meal the user ate. Estimate calories and macros from the description when the user does not provide them.",
+                "Log a meal the user ate. Estimate calories and macros from the description when the user does not provide them. Use logged_at whenever the user specified when it was eaten.",
             parameters: {
                 type: "object",
                 properties: {
@@ -127,6 +128,11 @@ const TOOLS = [
                         enum: ["estimate", "barcode", "dish", "manual"],
                         description:
                             "Origin of the nutrition values: estimate, barcode lookup, saved dish, or manual user values.",
+                    },
+                    logged_at: {
+                        type: "string",
+                        description:
+                            "ISO 8601 time the meal was eaten; omit only when it was eaten now.",
                     },
                 },
                 required: ["description", "meal_type"],
@@ -140,7 +146,7 @@ const TOOLS = [
             description:
                 "Show the user a meal card with Confirm/Cancel buttons instead of saving. " +
                 "The app logs the entry itself when the user taps Confirm — never follow up with log_meal. " +
-                "Always include your calorie and macro estimates.",
+                "Always include your calorie and macro estimates, and logged_at whenever the user specified when it was eaten.",
             parameters: {
                 type: "object",
                 properties: {
@@ -159,6 +165,11 @@ const TOOLS = [
                         description:
                             "Origin of the nutrition values: estimate, barcode lookup, saved dish, or manual user values.",
                     },
+                    logged_at: {
+                        type: "string",
+                        description:
+                            "ISO 8601 time the meal was eaten; omit only when it was eaten now.",
+                    },
                 },
                 required: ["description", "meal_type"],
             },
@@ -168,10 +179,18 @@ const TOOLS = [
         type: "function",
         function: {
             name: "log_water",
-            description: "Log drinking water, in milliliters.",
+            description:
+                "Log drinking water, in milliliters, at the user-specified time when provided.",
             parameters: {
                 type: "object",
-                properties: { amount_ml: { type: "number" } },
+                properties: {
+                    amount_ml: { type: "number" },
+                    logged_at: {
+                        type: "string",
+                        description:
+                            "ISO 8601 time the water was drunk; omit only when it was drunk now.",
+                    },
+                },
                 required: ["amount_ml"],
             },
         },
@@ -180,10 +199,18 @@ const TOOLS = [
         type: "function",
         function: {
             name: "log_weight",
-            description: "Log the user's body weight, in kilograms.",
+            description:
+                "Log the user's body weight, in kilograms, at the user-specified time when provided.",
             parameters: {
                 type: "object",
-                properties: { weight_kg: { type: "number" } },
+                properties: {
+                    weight_kg: { type: "number" },
+                    logged_at: {
+                        type: "string",
+                        description:
+                            "ISO 8601 time the weight was measured; omit only when it was measured now.",
+                    },
+                },
                 required: ["weight_kg"],
             },
         },
@@ -385,6 +412,8 @@ function collectProposal(
             throw new Error("meal_type must be breakfast|lunch|dinner|snack");
         }
         const p: MealProposal = { description, meal_type };
+        const loggedAt = optionalLoggedAt(args.logged_at);
+        if (loggedAt !== undefined) p.logged_at = loggedAt;
         for (const k of [
             "calories",
             "protein_g",
@@ -474,6 +503,7 @@ export async function executeTool(
                     nutrition_source:
                         (args.nutrition_source as MealInput["nutrition_source"]) ??
                         "estimate",
+                    logged_at: optionalLoggedAt(args.logged_at),
                     idempotency_key: idem,
                 };
                 if (!input.description) throw new Error("description required");
@@ -483,6 +513,7 @@ export async function executeTool(
             case "log_water": {
                 const { entry } = await insertWater(userId, {
                     amount_ml: positive(args.amount_ml),
+                    logged_at: optionalLoggedAt(args.logged_at),
                     idempotency_key: idem,
                 });
                 return JSON.stringify({ logged: true, entry });
@@ -490,6 +521,7 @@ export async function executeTool(
             case "log_weight": {
                 const { entry } = await insertWeight(userId, {
                     weight_g: weightGramsFromKg(args.weight_kg),
+                    logged_at: optionalLoggedAt(args.logged_at),
                     idempotency_key: idem,
                 });
                 return JSON.stringify({ logged: true, entry });
@@ -791,6 +823,7 @@ export async function runChatTurn(
         ? AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)])
         : AbortSignal.timeout(TURN_TIMEOUT_MS);
     const tz = timezone ?? (await getUserTimezone(userId));
+    const currentInstant = new Date().toISOString();
     const messages: unknown[] = [
         {
             role: "system",
@@ -803,6 +836,8 @@ export async function runChatTurn(
                 "After propose_meal, reply with one short sentence (note what you estimated); the buttons handle the confirmation — don't ask in words. " +
                 "Call log_meal directly only when the user's message is an explicit command to log ('запиши', 'добавь', 'внеси') or they just typed their agreement to your proposal. " +
                 "Water and weight are unambiguous — log them immediately without asking. " +
+                "TIME TARGETING: when the user specifies a time or relative time such as 'вчера', 'утром', 'в обед', or 'позавчера на ужин', you MUST pass logged_at as an ISO 8601 instant to propose_meal, log_meal, log_water, or log_weight. " +
+                "For a past day without an exact time, use the current local time of day on that date. Mention the target day in the proposal reply or saved-entry confirmation. " +
                 "CRITICAL: data is saved ONLY by tool calls. Never say an entry was logged, " +
                 "updated or deleted unless the corresponding tool returned success in this turn; a proposal awaiting confirmation is not saved. " +
                 "Consult get_dashboard before answering questions about today or progress, and get_day for past dates. " +
@@ -819,7 +854,7 @@ export async function runChatTurn(
                 "saved dish matches, use its macros verbatim in propose_meal and mention the match. " +
                 "If several could match, ask which one. If none match, estimate as usual. When the " +
                 "user asks to remember a dish (or confirms a new recurring item), call save_dish. " +
-                `Today is ${todayInTz(tz)} (${tz}). ` +
+                `Current time is ${currentInstant}; today is ${todayInTz(tz)} (${tz}). ` +
                 "Reply in the user's language, in one or two short sentences.",
         },
         ...history,

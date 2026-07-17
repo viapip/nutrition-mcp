@@ -116,6 +116,32 @@ function buildInsights(d: {
     return lines.slice(0, 4);
 }
 
+/** «ИТОГИ» + «Закрыть» — видна во всех состояниях экрана (загрузка/ошибка/данные). */
+function StatsTopBar({ theme }: { theme: ThemeColors }) {
+    return (
+        <View style={styles.topBar}>
+            <Text style={[styles.eyebrow, { color: theme.inkMuted }]}>
+                ИТОГИ
+            </Text>
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Закрыть итоги"
+                onPress={() => router.back()}
+                hitSlop={8}
+                style={({ pressed }) => ({
+                    transform: [{ scale: pressed ? 0.96 : 1 }],
+                })}
+            >
+                <Text
+                    style={[styles.closeAction, { color: theme.inkSecondary }]}
+                >
+                    Закрыть
+                </Text>
+            </Pressable>
+        </View>
+    );
+}
+
 function StatsSkeleton({ theme }: { theme: ThemeColors }) {
     const pulse = usePulse();
 
@@ -126,6 +152,7 @@ function StatsSkeleton({ theme }: { theme: ThemeColors }) {
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
             <View style={[styles.wrap, styles.skeletonWrap]}>
+                <StatsTopBar theme={theme} />
                 <Animated.View style={block(styles.skelLine)} />
                 <Animated.View style={block(styles.skelTitle)} />
                 <Animated.View style={block(styles.skelHero)} />
@@ -297,36 +324,39 @@ export default function StatsScreen() {
         if (!failed) return <StatsSkeleton theme={theme} />;
         return (
             <SafeAreaView
-                style={[
-                    styles.safe,
-                    styles.retryWrap,
-                    { backgroundColor: theme.surface },
-                ]}
+                style={[styles.safe, { backgroundColor: theme.surface }]}
             >
-                <Text style={[styles.retryEyebrow, { color: theme.inkMuted }]}>
-                    ИТОГИ
-                </Text>
-                <Text style={[styles.retryTitle, { color: theme.ink }]}>
-                    Цифры не пришли
-                </Text>
-                <Text style={[styles.retryHint, { color: theme.inkMuted }]}>
-                    Проверь соединение — статистика никуда не делась.
-                </Text>
-                <Pressable
-                    accessibilityRole="button"
-                    onPress={() => void load()}
-                    style={({ pressed }) => [
-                        styles.retryBtn,
-                        {
-                            backgroundColor: theme.accent,
-                            transform: [{ scale: pressed ? 0.97 : 1 }],
-                        },
-                    ]}
-                >
-                    <Text style={[styles.retryText, { color: theme.onAccent }]}>
-                        Повторить
+                <View style={styles.wrap}>
+                    <StatsTopBar theme={theme} />
+                </View>
+                <View style={styles.retryWrap}>
+                    <Text style={[styles.retryTitle, { color: theme.ink }]}>
+                        Цифры не пришли
                     </Text>
-                </Pressable>
+                    <Text style={[styles.retryHint, { color: theme.inkMuted }]}>
+                        Проверь соединение — статистика никуда не делась.
+                    </Text>
+                    <Pressable
+                        accessibilityRole="button"
+                        onPress={() => void load()}
+                        style={({ pressed }) => [
+                            styles.retryBtn,
+                            {
+                                backgroundColor: theme.accent,
+                                transform: [{ scale: pressed ? 0.97 : 1 }],
+                            },
+                        ]}
+                    >
+                        <Text
+                            style={[
+                                styles.retryText,
+                                { color: theme.onAccent },
+                            ]}
+                        >
+                            Повторить
+                        </Text>
+                    </Pressable>
+                </View>
             </SafeAreaView>
         );
     }
@@ -342,18 +372,20 @@ export default function StatsScreen() {
     const showWeekAvg = windowLen > 7;
 
     const goals = stats.goals;
-    const avgProtein7 = avgOf(logged7.map((d) => d.protein_g));
-    const avgCarbs7 = avgOf(logged7.map((d) => d.carbs_g));
-    const avgFat7 = avgOf(logged7.map((d) => d.fat_g));
+    // Макросы и вода следуют выбранному периоду — переключатель глобален.
+    const avgProtein = avgOf(loggedWindow.map((d) => d.protein_g));
+    const avgCarbs = avgOf(loggedWindow.map((d) => d.carbs_g));
+    const avgFat = avgOf(loggedWindow.map((d) => d.fat_g));
 
-    const avgWater7 = avgOf(logged7.map((d) => d.water_ml));
+    const avgWater = avgOf(loggedWindow.map((d) => d.water_ml));
     const waterGoal = goals.daily_water_ml;
-    // «Закрыто N из 7» — та же неделя, что и среднее (непрологированный день = 0 = не закрыт).
+    // «Закрыто N из N» — по всему окну (непрологированный день = 0 = не закрыт).
     const waterDaysHit =
         waterGoal != null
-            ? last7.filter((d) => d.water_ml >= waterGoal).length
+            ? stats.days.filter((d) => d.water_ml >= waterGoal).length
             : null;
-    const waterPct = waterGoal ? Math.min(avgWater7 / waterGoal, 1) : 0;
+    const waterPct = waterGoal ? Math.min(avgWater / waterGoal, 1) : 0;
+    const periodLabel = `${windowLen} ${pluralDays(windowLen)}`;
 
     const weightSeries = stats.weight.series;
     const firstW = weightSeries[0] ?? null;
@@ -413,34 +445,7 @@ export default function StatsScreen() {
                 <View style={styles.wrap}>
                     {/* Top bar */}
                     <FadeIn delay={0}>
-                        <View style={styles.topBar}>
-                            <Text
-                                style={[
-                                    styles.eyebrow,
-                                    { color: theme.inkMuted },
-                                ]}
-                            >
-                                ИТОГИ
-                            </Text>
-                            <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Закрыть итоги"
-                                onPress={() => router.back()}
-                                hitSlop={8}
-                                style={({ pressed }) => ({
-                                    transform: [{ scale: pressed ? 0.96 : 1 }],
-                                })}
-                            >
-                                <Text
-                                    style={[
-                                        styles.closeAction,
-                                        { color: theme.inkSecondary },
-                                    ]}
-                                >
-                                    Закрыть
-                                </Text>
-                            </Pressable>
-                        </View>
+                        <StatsTopBar theme={theme} />
                     </FadeIn>
 
                     {/* Period toggle */}
@@ -700,25 +705,25 @@ export default function StatsScreen() {
                                     { color: theme.inkMuted },
                                 ]}
                             >
-                                МАКРОСЫ · НЕДЕЛЯ
+                                МАКРОСЫ · {periodLabel.toUpperCase()}
                             </Text>
                             <MacroBar
                                 label="Белки"
-                                value={avgProtein7}
+                                value={avgProtein}
                                 goal={goals.daily_protein_g}
                                 color={theme.protein}
                                 theme={theme}
                             />
                             <MacroBar
                                 label="Углеводы"
-                                value={avgCarbs7}
+                                value={avgCarbs}
                                 goal={goals.daily_carbs_g}
                                 color={theme.carbs}
                                 theme={theme}
                             />
                             <MacroBar
                                 label="Жиры"
-                                value={avgFat7}
+                                value={avgFat}
                                 goal={goals.daily_fat_g}
                                 color={theme.fat}
                                 theme={theme}
@@ -741,7 +746,7 @@ export default function StatsScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    ВОДА · НЕДЕЛЯ
+                                    ВОДА · {periodLabel.toUpperCase()}
                                 </Text>
                                 <Text
                                     style={[
@@ -750,7 +755,7 @@ export default function StatsScreen() {
                                         { color: theme.water },
                                     ]}
                                 >
-                                    {litreText(avgWater7)}
+                                    {litreText(avgWater)}
                                     {waterGoal != null &&
                                         ` / ${litreText(waterGoal)}`}{" "}
                                     л
@@ -782,8 +787,8 @@ export default function StatsScreen() {
                                         { color: theme.inkMuted },
                                     ]}
                                 >
-                                    Цель закрыта {waterDaysHit} из{" "}
-                                    {last7.length} {pluralDays(last7.length)}
+                                    Цель закрыта {waterDaysHit} из {windowLen}{" "}
+                                    {pluralDays(windowLen)}
                                 </Text>
                             )}
                         </View>
@@ -1004,15 +1009,11 @@ export default function StatsScreen() {
 const styles = StyleSheet.create({
     safe: { flex: 1 },
     retryWrap: {
+        flex: 1,
         alignItems: "center",
         justifyContent: "center",
         gap: Spacing.md,
         padding: Spacing.lg,
-    },
-    retryEyebrow: {
-        fontFamily: Fonts.sansSemiBold,
-        fontSize: 11,
-        letterSpacing: 3,
     },
     retryTitle: {
         fontFamily: Fonts.display,

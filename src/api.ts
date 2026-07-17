@@ -91,7 +91,9 @@ export function optionalLoggedAt(
     nowMs: number = Date.now(),
 ): string | undefined {
     if (value === undefined) return undefined;
-    if (typeof value !== "string") throw new Error("bad logged_at");
+    if (typeof value !== "string") {
+        throw new Error("logged_at must be an ISO 8601 string");
+    }
     validateLoggedAt(value, nowMs);
     return value;
 }
@@ -338,6 +340,9 @@ export function mealFields(
     } else if (!partial) {
         out.nutrition_source = "manual";
     }
+    if (body.logged_at !== undefined) {
+        out.logged_at = optionalLoggedAt(body.logged_at);
+    }
     return out;
 }
 
@@ -547,7 +552,6 @@ export function createApiRouter() {
             const fields = mealFields(body, false);
             const { meal } = await insertMeal(c.get("userId") as string, {
                 ...(fields as MealInput),
-                logged_at: optionalLoggedAt(body.logged_at),
                 idempotency_key: idempotencyKey(body),
             });
             return c.json({ meal }, 201);
@@ -625,6 +629,7 @@ export function createApiRouter() {
             const body = await jsonBody(c);
             const { entry } = await insertWeight(c.get("userId") as string, {
                 weight_g: weightGrams(body.weight_kg),
+                logged_at: optionalLoggedAt(body.logged_at),
                 idempotency_key: idempotencyKey(body),
             });
             return c.json({ entry }, 201);

@@ -239,6 +239,8 @@ export default function SettingsScreen() {
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<string | null>(null);
     const [focused, setFocused] = useState(false);
+    // Форма ключа при сохранённом ключе спрятана за компактной строкой статуса.
+    const [expanded, setExpanded] = useState(false);
     const [reminders, setReminders] = useState<Reminder[]>([]);
     const [remindersReady, setRemindersReady] = useState(false);
     const [reminderNote, setReminderNote] = useState<string | null>(null);
@@ -456,6 +458,98 @@ export default function SettingsScreen() {
         (a, b) => a.hour - b.hour || a.minute - b.minute,
     );
 
+    const keyForm = (
+        <View style={[styles.form, { backgroundColor: theme.surfaceElevated }]}>
+            <Text
+                style={[
+                    styles.eyebrow,
+                    styles.sectionEyebrow,
+                    { color: theme.inkMuted },
+                ]}
+            >
+                {hasKey ? "ЗАМЕНИТЬ КЛЮЧ" : "API-КЛЮЧ"}
+            </Text>
+            <TextInput
+                style={[
+                    styles.input,
+                    {
+                        backgroundColor: theme.surface,
+                        borderColor: focused ? theme.accent : theme.surface,
+                        color: theme.ink,
+                    },
+                ]}
+                placeholder="sk-…"
+                placeholderTextColor={theme.inkMuted}
+                cursorColor={theme.accent}
+                selectionColor={theme.accent}
+                value={key}
+                onChangeText={(v) => {
+                    setKey(v);
+                    setNote(null);
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+            />
+            <Text style={[styles.fieldHint, { color: theme.inkMuted }]}>
+                Хранится на твоём сервере и больше не показывается. Ключи
+                Kimi/Moonshot работают из коробки; подойдёт любой
+                OpenAI-совместимый провайдер, на который смотрит сервер.
+            </Text>
+            <Pressable
+                accessibilityRole="button"
+                onPress={() => void save(key.trim())}
+                disabled={busy || !key.trim()}
+                style={({ pressed }) => {
+                    const off = busy || !key.trim();
+                    return [
+                        styles.saveBtn,
+                        {
+                            backgroundColor: theme.accent,
+                            opacity: off ? 0.5 : 1,
+                            transform: [{ scale: pressed && !off ? 0.97 : 1 }],
+                        },
+                    ];
+                }}
+            >
+                <Text style={[styles.saveText, { color: theme.onAccent }]}>
+                    {busy ? "Сохраняю…" : "Сохранить ключ"}
+                </Text>
+            </Pressable>
+            {hasKey && (
+                <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                        tapBuzz();
+                        void save(null);
+                    }}
+                    disabled={busy}
+                    style={styles.removeBtn}
+                >
+                    <Text style={[styles.removeText, { color: theme.danger }]}>
+                        Удалить мой ключ
+                    </Text>
+                </Pressable>
+            )}
+            {note && (
+                <Text
+                    style={[
+                        styles.note,
+                        {
+                            color: note.startsWith("Не получилось")
+                                ? theme.danger
+                                : theme.accent,
+                        },
+                    ]}
+                >
+                    {note}
+                </Text>
+            )}
+        </View>
+    );
+
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
             <KeyboardAvoidingView style={styles.flex} behavior="padding">
@@ -468,7 +562,7 @@ export default function SettingsScreen() {
                         <View style={styles.header}>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel="Назад к дашборду"
+                                accessibilityLabel="Назад"
                                 onPress={() => router.back()}
                                 hitSlop={12}
                             >
@@ -478,177 +572,150 @@ export default function SettingsScreen() {
                                         { color: theme.accent },
                                     ]}
                                 >
-                                    ← Сегодня
+                                    ← Назад
                                 </Text>
                             </Pressable>
                         </View>
 
-                        {/* Hero */}
+                        {/* Access */}
                         <Text
                             style={[styles.eyebrow, { color: theme.inkMuted }]}
                         >
                             КУХНЯ · ДОСТУП
                         </Text>
-                        <Text style={[styles.hero, { color: theme.ink }]}>
-                            ТВОЙ{"\n"}
-                            <Text style={{ color: theme.accent }}>КЛЮЧ.</Text>
-                        </Text>
-                        <Text
-                            style={[styles.heroHint, { color: theme.inkMuted }]}
-                        >
-                            Ассистент ходит к LLM-провайдеру на каждое
-                            сообщение. Добавь свой API-ключ, чтобы платить ровно
-                            за то, что используешь.
-                        </Text>
 
-                        {/* No key anywhere → the danger note below explains */}
-                        {hasKey != null && (hasKey || chatAvailable) && (
-                            <KeyStatus hasKey={hasKey} theme={theme} />
-                        )}
-                        {loadError && (
-                            <Text
-                                style={[
-                                    styles.heroHint,
-                                    { color: theme.inkMuted },
-                                ]}
-                            >
-                                Не удалось загрузить настройки — проверь сеть.
-                            </Text>
-                        )}
-                        {!chatAvailable && !hasKey && (
-                            <Text
-                                style={[
-                                    styles.heroHint,
-                                    { color: theme.danger },
-                                ]}
-                            >
-                                Серверный ключ не настроен — ассистент выключен,
-                                пока не добавишь свой.
-                            </Text>
-                        )}
-
-                        {/* Key input */}
-                        <View
-                            style={[
-                                styles.form,
-                                { backgroundColor: theme.surfaceElevated },
-                            ]}
-                        >
-                            <Text
-                                style={[
-                                    styles.eyebrow,
-                                    styles.sectionEyebrow,
-                                    { color: theme.inkMuted },
-                                ]}
-                            >
-                                {hasKey ? "ЗАМЕНИТЬ КЛЮЧ" : "API-КЛЮЧ"}
-                            </Text>
-                            <TextInput
-                                style={[
-                                    styles.input,
-                                    {
-                                        backgroundColor: theme.surface,
-                                        borderColor: focused
-                                            ? theme.accent
-                                            : theme.surface,
-                                        color: theme.ink,
-                                    },
-                                ]}
-                                placeholder="sk-…"
-                                placeholderTextColor={theme.inkMuted}
-                                cursorColor={theme.accent}
-                                selectionColor={theme.accent}
-                                value={key}
-                                onChangeText={(v) => {
-                                    setKey(v);
-                                    setNote(null);
-                                }}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                secureTextEntry
-                                onFocus={() => setFocused(true)}
-                                onBlur={() => setFocused(false)}
-                            />
-                            <Text
-                                style={[
-                                    styles.fieldHint,
-                                    { color: theme.inkMuted },
-                                ]}
-                            >
-                                Хранится на твоём сервере и больше не
-                                показывается. Ключи Kimi/Moonshot работают из
-                                коробки; подойдёт любой OpenAI-совместимый
-                                провайдер, на который смотрит сервер.
-                            </Text>
-                            <Pressable
-                                accessibilityRole="button"
-                                onPress={() => void save(key.trim())}
-                                disabled={busy || !key.trim()}
-                                style={({ pressed }) => {
-                                    const off = busy || !key.trim();
-                                    return [
-                                        styles.saveBtn,
-                                        {
-                                            backgroundColor: theme.accent,
-                                            opacity: off ? 0.5 : 1,
-                                            transform: [
-                                                {
-                                                    scale:
-                                                        pressed && !off
-                                                            ? 0.97
-                                                            : 1,
-                                                },
-                                            ],
-                                        },
-                                    ];
-                                }}
-                            >
+                        {hasKey === false ? (
+                            // Ключа нет — полный герой ведёт добавить свой.
+                            <>
+                                <Text
+                                    style={[styles.hero, { color: theme.ink }]}
+                                >
+                                    ТВОЙ{"\n"}
+                                    <Text style={{ color: theme.accent }}>
+                                        КЛЮЧ.
+                                    </Text>
+                                </Text>
                                 <Text
                                     style={[
-                                        styles.saveText,
-                                        { color: theme.onAccent },
+                                        styles.heroHint,
+                                        { color: theme.inkMuted },
                                     ]}
                                 >
-                                    {busy ? "Сохраняю…" : "Сохранить ключ"}
+                                    Ассистент ходит к LLM-провайдеру на каждое
+                                    сообщение. Добавь свой API-ключ, чтобы
+                                    платить ровно за то, что используешь.
                                 </Text>
-                            </Pressable>
-                            {hasKey && (
-                                <Pressable
-                                    accessibilityRole="button"
-                                    onPress={() => {
-                                        tapBuzz();
-                                        void save(null);
-                                    }}
-                                    disabled={busy}
-                                    style={styles.removeBtn}
-                                >
+                                {chatAvailable && (
+                                    <KeyStatus hasKey={false} theme={theme} />
+                                )}
+                                {!chatAvailable && (
                                     <Text
                                         style={[
-                                            styles.removeText,
+                                            styles.heroHint,
                                             { color: theme.danger },
                                         ]}
                                     >
-                                        Удалить мой ключ
+                                        Серверный ключ не настроен — ассистент
+                                        выключен, пока не добавишь свой.
                                     </Text>
-                                </Pressable>
-                            )}
-                            {note && (
-                                <Text
-                                    style={[
-                                        styles.note,
+                                )}
+                                {keyForm}
+                            </>
+                        ) : (
+                            // Ключ сохранён (или статус неизвестен) — компактная
+                            // строка, форма разворачивается по тапу.
+                            <>
+                                <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={
+                                        expanded
+                                            ? "Свернуть настройки ключа"
+                                            : hasKey
+                                              ? "Заменить ключ ассистента"
+                                              : "Открыть настройки ключа"
+                                    }
+                                    onPress={() => {
+                                        tapBuzz();
+                                        setExpanded((v) => !v);
+                                    }}
+                                    style={({ pressed }) => [
+                                        styles.status,
                                         {
-                                            color: note.startsWith(
-                                                "Не получилось",
-                                            )
-                                                ? theme.danger
-                                                : theme.accent,
+                                            backgroundColor: hasKey
+                                                ? theme.accentSoft
+                                                : theme.surfaceElevated,
+                                            opacity: pressed ? 0.7 : 1,
                                         },
                                     ]}
                                 >
-                                    {note}
-                                </Text>
-                            )}
-                        </View>
+                                    <View
+                                        style={[
+                                            styles.statusHalo,
+                                            hasKey && {
+                                                backgroundColor:
+                                                    theme.accentSoft,
+                                            },
+                                        ]}
+                                    >
+                                        <View
+                                            style={[
+                                                styles.statusDot,
+                                                {
+                                                    backgroundColor: hasKey
+                                                        ? theme.accent
+                                                        : theme.inkMuted,
+                                                },
+                                                hasKey && {
+                                                    shadowColor: theme.accent,
+                                                    shadowOpacity: 0.9,
+                                                    shadowRadius: 6,
+                                                    shadowOffset: {
+                                                        width: 0,
+                                                        height: 0,
+                                                    },
+                                                    elevation: 6,
+                                                },
+                                            ]}
+                                        />
+                                    </View>
+                                    <View style={styles.statusText}>
+                                        <Text
+                                            style={[
+                                                styles.statusTitle,
+                                                { color: theme.ink },
+                                            ]}
+                                        >
+                                            {hasKey
+                                                ? "Ассистент подключён"
+                                                : "Ключ ассистента"}
+                                        </Text>
+                                        <Text
+                                            style={[
+                                                styles.statusHint,
+                                                { color: theme.inkMuted },
+                                            ]}
+                                        >
+                                            {hasKey
+                                                ? "Свой ключ · платишь за свои запросы"
+                                                : loadError
+                                                  ? "Проверь соединение, чтобы увидеть статус"
+                                                  : "Загрузка настроек…"}
+                                        </Text>
+                                    </View>
+                                    <Text
+                                        style={[
+                                            styles.statusAction,
+                                            { color: theme.accent },
+                                        ]}
+                                    >
+                                        {expanded
+                                            ? "Свернуть"
+                                            : "Заменить ключ"}
+                                    </Text>
+                                </Pressable>
+                                {expanded && keyForm}
+                            </>
+                        )}
 
                         {/* Reminders */}
                         <View
@@ -1004,6 +1071,7 @@ const styles = StyleSheet.create({
     statusText: { flex: 1, gap: 2 },
     statusTitle: { fontFamily: Fonts.sansSemiBold, fontSize: 15 },
     statusHint: { fontFamily: Fonts.sans, fontSize: 13, lineHeight: 18 },
+    statusAction: { fontFamily: Fonts.sansSemiBold, fontSize: 13 },
     form: {
         marginTop: Spacing.lg,
         gap: Spacing.sm,

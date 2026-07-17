@@ -485,15 +485,22 @@ export async function searchMeals(query: string): Promise<MealRow[]> {
 export async function patchMeal(
     id: string,
     fields: Partial<MealFields>,
+    loggedAt?: string,
 ): Promise<void> {
     if (MOCK) {
         const m = MOCK_DASHBOARD.meals.find((x) => x.id === id);
-        if (m) Object.assign(m, fields);
+        if (m) {
+            Object.assign(m, fields);
+            if (loggedAt) m.logged_at = loggedAt;
+        }
         return;
     }
     await request(`/api/meals/${id}`, {
         method: "PATCH",
-        body: JSON.stringify(fields),
+        body: JSON.stringify({
+            ...fields,
+            ...(loggedAt ? { logged_at: loggedAt } : {}),
+        }),
     });
 }
 
@@ -544,6 +551,7 @@ export async function removeWater(id: string): Promise<void> {
 export async function addWeight(
     kg: number,
     idempotencyKey?: string,
+    loggedAt?: string,
 ): Promise<void> {
     if (MOCK) {
         MOCK_DASHBOARD.weight.current_g = Math.round(kg * 1000);
@@ -554,6 +562,7 @@ export async function addWeight(
         body: JSON.stringify({
             weight_kg: kg,
             idempotency_key: idempotencyKey,
+            ...(loggedAt ? { logged_at: loggedAt } : {}),
         }),
     });
 }

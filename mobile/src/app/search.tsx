@@ -1,4 +1,4 @@
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
     ActivityIndicator,
@@ -49,6 +49,44 @@ function formatDay(iso: string): string {
     });
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Локальный день устройства как YYYY-MM-DD (в useState-инициализаторе, не в рендере). */
+function localToday(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** Предыдущий локальный день — чистая функция дня, без чтения текущего времени. */
+function prevDay(day: string): string {
+    const [y, m, d] = day.split("-").map(Number);
+    const dt = new Date(y, m - 1, d - 1);
+    return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+}
+
+/** «16 июля» из YYYY-MM-DD. */
+function formatDayShort(day: string): string {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("ru-RU", {
+        day: "numeric",
+        month: "long",
+    });
+}
+
+/** Дата = выбранный день, время = «сейчас» на этой дате (контракт, п.4). */
+function loggedAtFor(day: string): string {
+    const [y, m, d] = day.split("-").map(Number);
+    const now = new Date();
+    return new Date(
+        y,
+        m - 1,
+        d,
+        now.getHours(),
+        now.getMinutes(),
+        now.getSeconds(),
+    ).toISOString();
+}
+
 /** «Б 46 · У 62 · Ж 22» — как на дашборде, только заданные макросы. */
 function macrosLine(meal: MealRow): string {
     return [
@@ -64,6 +102,16 @@ export default function SearchScreen() {
     const scheme = useColorScheme();
     const theme = Colors[scheme === "dark" ? "dark" : "light"];
     const { onError } = useRequireAuth();
+
+    // Роут-параметр дня: если пришли с прошлого дня — записи уходят туда.
+    const { date } = useLocalSearchParams<{ date?: string }>();
+    const [today] = useState(localToday);
+    const targetDay = date && date !== today ? date : null;
+    const targetLabel = targetDay
+        ? targetDay === prevDay(today)
+            ? `вчера, ${formatDayShort(targetDay)}`
+            : formatDayShort(targetDay)
+        : null;
 
     const [query, setQuery] = useState("");
     const [status, setStatus] = useState<Status>("idle");
@@ -108,10 +156,10 @@ export default function SearchScreen() {
         return () => clearTimeout(timer);
     }, [query, retry, onError]);
 
-    // Перезапись = НОВЫЙ приём сегодня; свежий ключ на каждый тап, замок ловит
-    // двойной тап одного жеста, а не осознанный повтор.
+    // Перезапись = НОВЫЙ приём (на выбранный день или сегодня). Свежий ключ на
+    // каждый тап; после успеха строка блокируется (added), дубль не создать.
     const relog = async (meal: MealRow) => {
-        if (inflight.current.has(meal.id)) return;
+        if (added.has(meal.id) || inflight.current.has(meal.id)) return;
         inflight.current.add(meal.id);
         tapBuzz();
         setNote(null);
@@ -126,6 +174,7 @@ export default function SearchScreen() {
                     fat_g: meal.fat_g,
                 },
                 newIdempotencyKey(),
+                targetDay ? loggedAtFor(targetDay) : undefined,
             );
             successBuzz();
             setAdded((prev) => new Set(prev).add(meal.id));
@@ -144,12 +193,12 @@ export default function SearchScreen() {
                 <View style={styles.header}>
                     <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel="Назад к дашборду"
+                        accessibilityLabel="Назад"
                         onPress={() => router.back()}
                         hitSlop={12}
                     >
                         <Text style={[styles.back, { color: theme.accent }]}>
-                            ← Сегодня
+                            ← Назад
                         </Text>
                     </Pressable>
                 </View>
@@ -157,6 +206,11 @@ export default function SearchScreen() {
                 <Text style={[styles.eyebrow, { color: theme.inkMuted }]}>
                     ИСТОРИЯ · ПОИСК
                 </Text>
+                {targetLabel && (
+                    <Text style={[styles.dayNote, { color: theme.accent }]}>
+                        Новые записи — на {targetLabel}
+                    </Text>
+                )}
 
                 <TextInput
                     style={[
@@ -273,7 +327,14 @@ export default function SearchScreen() {
                                     <Pressable
                                         key={meal.id}
                                         accessibilityRole="button"
-                                        accessibilityLabel={`Записать «${meal.description}» сегодня`}
+                                        accessibilityLabel={
+                                            done
+                                                ? `«${meal.description}» добавлено`
+                                                : targetDay
+                                                  ? `Записать «${meal.description}» на ${formatDayShort(targetDay)}`
+                                                  : `Записать «${meal.description}» сегодня`
+                                        }
+                                        disabled={done}
                                         onPress={() => void relog(meal)}
                                         style={({ pressed }) => [
                                             styles.row,
@@ -345,6 +406,7 @@ export default function SearchScreen() {
                                                 </Text>
                                             )}
                                             <Text
+                                                numberOfLines={1}
                                                 style={[
                                                     styles.rowAction,
                                                     {
@@ -356,7 +418,9 @@ export default function SearchScreen() {
                                             >
                                                 {done
                                                     ? "Добавлено ✓"
-                                                    : "Записать"}
+                                                    : targetDay
+                                                      ? `Записать на ${formatDayShort(targetDay)}`
+                                                      : "Записать"}
                                             </Text>
                                         </View>
                                     </Pressable>
@@ -402,6 +466,11 @@ const styles = StyleSheet.create({
         fontFamily: Fonts.sansMedium,
         fontSize: 13,
         marginTop: Spacing.sm,
+    },
+    dayNote: {
+        fontFamily: Fonts.sansMedium,
+        fontSize: 13,
+        marginBottom: Spacing.sm,
     },
     results: {
         paddingTop: Spacing.md,

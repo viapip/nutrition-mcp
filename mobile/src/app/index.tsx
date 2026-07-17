@@ -1,7 +1,9 @@
 import { router, useFocusEffect, type Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+    Alert,
     Animated,
+    Platform,
     Pressable,
     RefreshControl,
     ScrollView,
@@ -58,7 +60,6 @@ const WATER_PRESETS = [150, 250, 500];
 // Экран статистики создаётся параллельно; typed routes подхватят маршрут
 // после генерации .expo/types — до тех пор нужен каст.
 const STATS_ROUTE = "/stats" as Href;
-const SEARCH_ROUTE = "/search" as Href;
 
 // Кэш стрика+недели по «сегодня» сервера (end); любая запись дня сбрасывает
 let streakCache: {
@@ -83,14 +84,6 @@ function dayWord(n: number): string {
     return "дней";
 }
 
-function formatDate(iso: string): string {
-    return new Date(`${iso}T12:00:00`).toLocaleDateString("ru-RU", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-    });
-}
-
 function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString("ru-RU", {
         hour: "numeric",
@@ -104,14 +97,48 @@ function shiftDate(iso: string, days: number): string {
     return d.toISOString().slice(0, 10);
 }
 
-/** «Сегодня», «Вчера», иначе «5 июля». */
+function cap(s: string): string {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** «Сегодня · 17 июля», «Вчера · 16 июля», «Вторник · 8 июля». */
 function dayTitle(iso: string, today: string): string {
-    if (iso === today) return "Сегодня";
-    if (iso === shiftDate(today, -1)) return "Вчера";
+    const d = new Date(`${iso}T12:00:00`);
+    const dm = d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+    if (iso === today) return `Сегодня · ${dm}`;
+    if (iso === shiftDate(today, -1)) return `Вчера · ${dm}`;
+    const wd = d.toLocaleDateString("ru-RU", { weekday: "long" });
+    return `${cap(wd)} · ${dm}`;
+}
+
+/** Подпись дня для кнопки «+ Добавить»: «вчера» / «16 июля». */
+function addContext(iso: string, today: string): string {
+    if (iso === shiftDate(today, -1)) return "вчера";
     return new Date(`${iso}T12:00:00`).toLocaleDateString("ru-RU", {
-        month: "long",
         day: "numeric",
+        month: "long",
     });
+}
+
+/** ISO записи на день `iso`: его дата + текущее время суток. Только из
+ * хендлеров (new Date), не в рендере. */
+function dayNowISO(iso: string): string {
+    const now = new Date();
+    const [y, m, d] = iso.split("-").map(Number);
+    now.setFullYear(y, m - 1, d);
+    return now.toISOString();
+}
+
+/** Alert is a no-op on web — fall back to window.confirm there. */
+function confirmDelete(title: string, onYes: () => void) {
+    if (Platform.OS === "web") {
+        if (window.confirm(title)) onYes();
+        return;
+    }
+    Alert.alert(title, undefined, [
+        { text: "Отмена", style: "cancel" },
+        { text: "Удалить", style: "destructive", onPress: onYes },
+    ]);
 }
 
 function greeting(): string {
@@ -236,17 +263,21 @@ export default function DashboardScreen() {
     const repeatLock = useRef(false);
     const freqLock = useRef(false);
     // Ключ-на-действие: держится до успеха, повтор того же — тот же ключ.
-    const waterKey = useRef<{ ml: number; key: string } | null>(null);
+    const waterKey = useRef<{ sig: string; key: string } | null>(null);
     const repeatKey = useRef<{ id: string; key: string } | null>(null);
     const freqKey = useRef<{ desc: string; key: string } | null>(null);
     const [mealEditor, setMealEditor] = useState<{
         visible: boolean;
         meal: MealRow | null;
-    }>({ visible: false, meal: null });
+        defaultLoggedAt: string;
+        backdated: boolean;
+    }>({ visible: false, meal: null, defaultLoggedAt: "", backdated: false });
     const [weightEditor, setWeightEditor] = useState<{
         visible: boolean;
-        entry: { id: string; weight_g: number } | null;
-    }>({ visible: false, entry: null });
+        entry: { id: string; weight_g: number; date?: string } | null;
+        defaultLoggedAt: string;
+        backdated: boolean;
+    }>({ visible: false, entry: null, defaultLoggedAt: "", backdated: false });
     const [goalsVisible, setGoalsVisible] = useState(false);
     const [streak, setStreak] = useState<number | null>(null);
     // Топ-3 частых приёма из getStats — чипы быстрого повтора в пустом дне.
@@ -278,8 +309,10 @@ export default function DashboardScreen() {
                 return;
             }
             const goal = s.goals.daily_calories;
+            // Все дни, а не только последние 7: окно недельной полосы
+            // сдвигается к выбранному дню и должно иметь данные и для старых.
             const week: Record<string, WeekDay> = {};
-            for (const d of s.days.slice(-7)) {
+            for (const d of s.days) {
                 week[d.date] = {
                     date: d.date,
                     pct: goal ? d.calories / goal : null,
@@ -384,8 +417,8 @@ export default function DashboardScreen() {
     }, [load]);
 
     const closeEditors = useCallback(() => {
-        setMealEditor({ visible: false, meal: null });
-        setWeightEditor({ visible: false, entry: null });
+        setMealEditor((cur) => ({ ...cur, visible: false }));
+        setWeightEditor((cur) => ({ ...cur, visible: false }));
         setGoalsVisible(false);
     }, []);
 
@@ -424,15 +457,18 @@ export default function DashboardScreen() {
             setWaterNote(null);
             // Optimistic total — the bars catch up after the reload.
             bumpWater(ml);
-            // Тот же мл, повторённый после сбоя, дедупится сервером; успех
-            // сбрасывает ключ — следующий стакан пишется как новый.
+            // Стакан пишется в просматриваемый день (сегодня → «сейчас»).
+            const loggedAt = viewDate == null ? undefined : dayNowISO(viewDate);
+            // Тот же мл в тот же день, повторённый после сбоя, дедупится
+            // сервером; успех сбрасывает ключ — следующий стакан как новый.
+            const sig = `${ml}|${viewDate ?? "today"}`;
             const key =
-                waterKey.current?.ml === ml
+                waterKey.current?.sig === sig
                     ? waterKey.current
-                    : { ml, key: newIdempotencyKey() };
+                    : { sig, key: newIdempotencyKey() };
             waterKey.current = key;
             try {
-                await addWater(ml, key.key);
+                await addWater(ml, key.key, loggedAt);
                 waterKey.current = null;
                 // Первый стакан за день двигает стрик — сбрасываем кэш бейджа.
                 streakCache = null;
@@ -450,7 +486,7 @@ export default function DashboardScreen() {
                 setWaterBusy(false);
             }
         },
-        [bumpWater, load, loadStats, todayDate, onError],
+        [bumpWater, load, loadStats, todayDate, onError, viewDate],
     );
 
     const deleteWater = useCallback(
@@ -468,13 +504,15 @@ export default function DashboardScreen() {
         [load, onError],
     );
 
-    // «Повторить приём»: копия записи логируется сейчас, поэтому прыгаем на сегодня.
+    // «Повторить приём»: копия записи в просматриваемый день (сегодня → «сейчас»),
+    // без переброса вида на сегодня.
     const repeatMeal = useCallback(
         async (meal: MealRow) => {
             // ref-замок: быстрый двойной тап иначе пишет два одинаковых приёма.
             if (repeatLock.current) return;
             repeatLock.current = true;
             tapBuzz();
+            const loggedAt = viewDate == null ? undefined : dayNowISO(viewDate);
             // Ключ на этот приём: повтор после сбоя дедупится, успех сбрасывает
             // — «повторить» ещё раз пишет новый.
             const key =
@@ -493,13 +531,13 @@ export default function DashboardScreen() {
                         fat_g: meal.fat_g,
                     },
                     key.key,
+                    loggedAt,
                 );
                 repeatKey.current = null;
                 successBuzz();
                 streakCache = null;
                 void loadStats(todayDate);
-                if (viewDate == null) void load();
-                else setViewDate(null);
+                void load();
             } catch (err) {
                 // 401 → login; прочий сбой повтора не критичен, молчим.
                 onError(err);
@@ -609,7 +647,9 @@ export default function DashboardScreen() {
     const heroSub =
         kcalGoal != null
             ? `${kcalEaten.toLocaleString("ru-RU")} из ${kcalGoal.toLocaleString("ru-RU")} ккал`
-            : "ккал за сегодня";
+            : isToday
+              ? "ккал за сегодня"
+              : "ккал за день";
     const waterPct = data.water.goal_ml
         ? Math.min(data.water.total_ml / data.water.goal_ml, 1)
         : 0;
@@ -631,12 +671,15 @@ export default function DashboardScreen() {
             : `${streak ?? 0} ${dayWord(streak ?? 0)}`;
     const weightFootnote = weightDeltaText(weightDeltaG, toGoalG);
 
-    // Неделя: 7 дней из getStats; сегодняшний слот перекрываем живыми данными.
+    // Окно недели: обычно кончается «сегодня», но сдвигается назад к
+    // выбранному дню, если он старше окна — чтобы всегда быть в полосе.
+    const windowEnd = data.date >= shiftDate(today, -6) ? today : data.date;
+    // Неделя: 7 дней; выбранный слот перекрываем живыми данными дашборда.
     const weekDays: WeekDay[] = Array.from({ length: 7 }, (_, i) => {
-        const date = shiftDate(today, i - 6);
-        if (date === today && data.date === today) {
+        const date = shiftDate(windowEnd, i - 6);
+        if (date === data.date) {
             return {
-                date: today,
+                date,
                 pct: kcalGoal ? kcalEaten / kcalGoal : null,
                 over: kcalOver,
             };
@@ -644,10 +687,58 @@ export default function DashboardScreen() {
         return weekByDate[date] ?? { date, pct: null, over: false };
     });
 
+    // Взвешивание просматриваемого дня (если есть) — деталь и «Править».
+    const dayWeight =
+        data.weight.series.find((p) => p.date === data.date) ?? null;
+    const lastKg =
+        data.weight.current_g != null ? data.weight.current_g / 1000 : null;
+
     const selectDay = (date: string) => {
         tapBuzz();
         setViewDate(date === today ? null : date);
     };
+
+    const openMealCreate = () => {
+        tapBuzz();
+        setMealEditor({
+            visible: true,
+            meal: null,
+            defaultLoggedAt: dayNowISO(data.date),
+            backdated: !isToday,
+        });
+    };
+    const openMealView = (meal: MealRow) => {
+        setMealEditor({
+            visible: true,
+            meal,
+            defaultLoggedAt: dayNowISO(data.date),
+            backdated: !isToday,
+        });
+    };
+    const openWeightCreate = () => {
+        setWeightEditor({
+            visible: true,
+            entry: null,
+            defaultLoggedAt: dayNowISO(data.date),
+            backdated: !isToday,
+        });
+    };
+    const openWeightEdit = (point: {
+        id: string;
+        weight_g: number;
+        date?: string;
+    }) => {
+        setWeightEditor({
+            visible: true,
+            entry: point,
+            defaultLoggedAt: dayNowISO(data.date),
+            backdated: !isToday,
+        });
+    };
+
+    // Переходы уносят выбранный день дальше: /search?date=… , /chat?date=…
+    const withDate = (base: string): Href =>
+        (isToday ? base : `${base}?date=${data.date}`) as Href;
 
     return (
         <SafeAreaView style={[styles.safe, { backgroundColor: theme.surface }]}>
@@ -668,33 +759,32 @@ export default function DashboardScreen() {
                                 <Text
                                     style={[
                                         styles.eyebrow,
-                                        { color: theme.inkMuted },
+                                        {
+                                            color: isToday
+                                                ? theme.inkMuted
+                                                : theme.accent,
+                                        },
                                     ]}
                                 >
-                                    {(isToday
-                                        ? greeting()
-                                        : formatDate(data.date)
-                                    ).toUpperCase()}
+                                    {isToday
+                                        ? greeting().toUpperCase()
+                                        : "ВЫБРАННЫЙ ДЕНЬ"}
                                 </Text>
                                 <View style={styles.headerActions}>
-                                    {!showStreak && (
-                                        <Pressable
-                                            accessibilityRole="button"
-                                            onPress={() =>
-                                                router.push(STATS_ROUTE)
-                                            }
-                                            hitSlop={8}
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        onPress={() => router.push(STATS_ROUTE)}
+                                        hitSlop={8}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.headerAction,
+                                                { color: theme.inkMuted },
+                                            ]}
                                         >
-                                            <Text
-                                                style={[
-                                                    styles.headerAction,
-                                                    { color: theme.inkMuted },
-                                                ]}
-                                            >
-                                                Итоги
-                                            </Text>
-                                        </Pressable>
-                                    )}
+                                            Итоги
+                                        </Text>
+                                    </Pressable>
                                     <Pressable
                                         accessibilityRole="button"
                                         onPress={() => router.push("/settings")}
@@ -726,7 +816,16 @@ export default function DashboardScreen() {
                                 </View>
                             </View>
                             <View style={styles.h1Row}>
-                                <Text style={[styles.h1, { color: theme.ink }]}>
+                                <Text
+                                    style={[
+                                        styles.h1,
+                                        {
+                                            color: isToday
+                                                ? theme.ink
+                                                : theme.accent,
+                                        },
+                                    ]}
+                                >
                                     {dayTitle(data.date, today)}
                                 </Text>
                                 {showStreak && (
@@ -765,6 +864,14 @@ export default function DashboardScreen() {
                                     </Pressable>
                                 )}
                             </View>
+                            {!isToday && (
+                                <View
+                                    style={[
+                                        styles.dayStrip,
+                                        { backgroundColor: theme.accent },
+                                    ]}
+                                />
+                            )}
                         </View>
                     </FadeIn>
 
@@ -961,291 +1068,8 @@ export default function DashboardScreen() {
                         </View>
                     </FadeIn>
 
-                    {/* Water */}
-                    <FadeIn delay={240}>
-                        <View
-                            style={[
-                                styles.block,
-                                { backgroundColor: theme.surfaceElevated },
-                            ]}
-                        >
-                            <View style={styles.cardHeader}>
-                                <Text
-                                    style={[
-                                        styles.cardLabel,
-                                        { color: theme.inkSecondary },
-                                    ]}
-                                >
-                                    ВОДА
-                                </Text>
-                                <Text
-                                    style={[
-                                        styles.cardValue,
-                                        TabularNums,
-                                        { color: theme.ink },
-                                    ]}
-                                >
-                                    {(
-                                        data.water.total_ml / 1000
-                                    ).toLocaleString("ru-RU", {
-                                        minimumFractionDigits: 1,
-                                        maximumFractionDigits: 1,
-                                    })}
-                                    {data.water.goal_ml != null &&
-                                        ` / ${(
-                                            data.water.goal_ml / 1000
-                                        ).toLocaleString("ru-RU", {
-                                            minimumFractionDigits: 1,
-                                            maximumFractionDigits: 1,
-                                        })}`}{" "}
-                                    л
-                                </Text>
-                            </View>
-                            <WaterBars
-                                byHour={data.water.by_hour}
-                                color={theme.water}
-                                theme={theme}
-                                width={contentW}
-                            />
-                            {isToday && (
-                                <View style={styles.chipRow}>
-                                    {WATER_PRESETS.map((ml) => (
-                                        <Pressable
-                                            key={ml}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`Добавить ${ml} мл воды`}
-                                            disabled={waterBusy}
-                                            onPress={() => void drinkWater(ml)}
-                                            hitSlop={{ top: 8, bottom: 8 }}
-                                            style={({ pressed }) => [
-                                                styles.chip,
-                                                {
-                                                    backgroundColor:
-                                                        theme.accentSoft,
-                                                    opacity: waterBusy
-                                                        ? 0.5
-                                                        : 1,
-                                                    transform: [
-                                                        {
-                                                            scale: pressed
-                                                                ? 0.96
-                                                                : 1,
-                                                        },
-                                                    ],
-                                                },
-                                            ]}
-                                        >
-                                            <Text
-                                                style={[
-                                                    styles.chipText,
-                                                    { color: theme.water },
-                                                ]}
-                                            >
-                                                +{ml} мл
-                                            </Text>
-                                        </Pressable>
-                                    ))}
-                                </View>
-                            )}
-                            {data.water.entries.length > 0 && (
-                                <View style={styles.chipRow}>
-                                    {data.water.entries.map((e) => (
-                                        <Pressable
-                                            key={e.id}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`Удалить ${e.amount_ml} мл (${formatTime(e.logged_at)})`}
-                                            onPress={() =>
-                                                void deleteWater(e.id)
-                                            }
-                                            hitSlop={{ top: 8, bottom: 8 }}
-                                            style={[
-                                                styles.chipGhost,
-                                                {
-                                                    borderColor: theme.hairline,
-                                                },
-                                            ]}
-                                        >
-                                            <Text
-                                                style={[
-                                                    styles.chipText,
-                                                    TabularNums,
-                                                    {
-                                                        color: theme.inkSecondary,
-                                                    },
-                                                ]}
-                                            >
-                                                {e.amount_ml} мл ·{" "}
-                                                {formatTime(e.logged_at)}
-                                                {"  "}
-                                                <Text
-                                                    style={{
-                                                        color: theme.inkMuted,
-                                                    }}
-                                                >
-                                                    ×
-                                                </Text>
-                                            </Text>
-                                        </Pressable>
-                                    ))}
-                                </View>
-                            )}
-                            {waterNote && (
-                                <Text
-                                    style={[
-                                        styles.footnote,
-                                        { color: theme.danger },
-                                    ]}
-                                >
-                                    {waterNote}
-                                </Text>
-                            )}
-                            {data.water.entries.length === 0 && isToday && (
-                                <Text
-                                    style={[
-                                        styles.footnote,
-                                        { color: theme.inkMuted },
-                                    ]}
-                                >
-                                    Ни капли за день — начни со стакана.
-                                </Text>
-                            )}
-                            {data.water.goal_ml != null &&
-                                data.water.entries.length > 0 && (
-                                    <Text
-                                        style={[
-                                            styles.footnote,
-                                            { color: theme.inkMuted },
-                                        ]}
-                                    >
-                                        {Math.round(waterPct * 100)}% дневной
-                                        цели — тапни запись, чтобы удалить
-                                    </Text>
-                                )}
-                        </View>
-                    </FadeIn>
-
-                    {/* Weight */}
-                    <FadeIn delay={300}>
-                        <View
-                            style={[
-                                styles.block,
-                                { backgroundColor: theme.surfaceElevated },
-                            ]}
-                        >
-                            <View style={styles.cardHeader}>
-                                <Text
-                                    style={[
-                                        styles.cardLabel,
-                                        { color: theme.inkSecondary },
-                                    ]}
-                                >
-                                    ВЕС · 30 ДНЕЙ
-                                </Text>
-                                {data.weight.current_g != null && (
-                                    <Text
-                                        style={[
-                                            styles.cardValue,
-                                            TabularNums,
-                                            { color: theme.ink },
-                                        ]}
-                                    >
-                                        {kgText(data.weight.current_g)} кг
-                                    </Text>
-                                )}
-                            </View>
-                            {data.weight.series.length >= 2 ? (
-                                <WeightSparkline
-                                    series={data.weight.series}
-                                    targetG={data.weight.target_g}
-                                    color={theme.accent}
-                                    theme={theme}
-                                    width={contentW}
-                                />
-                            ) : (
-                                <Text
-                                    style={[
-                                        styles.footnote,
-                                        { color: theme.inkMuted },
-                                    ]}
-                                >
-                                    Запиши вес дважды — появится тренд.
-                                </Text>
-                            )}
-                            {isToday && (
-                                <View style={styles.chipRow}>
-                                    <Pressable
-                                        accessibilityRole="button"
-                                        onPress={() =>
-                                            setWeightEditor({
-                                                visible: true,
-                                                entry: null,
-                                            })
-                                        }
-                                        hitSlop={{ top: 8, bottom: 8 }}
-                                        style={[
-                                            styles.chip,
-                                            {
-                                                backgroundColor:
-                                                    theme.accentSoft,
-                                            },
-                                        ]}
-                                    >
-                                        <Text
-                                            style={[
-                                                styles.chipText,
-                                                { color: theme.accent },
-                                            ]}
-                                        >
-                                            Записать вес
-                                        </Text>
-                                    </Pressable>
-                                    {lastWeightPoint && (
-                                        <Pressable
-                                            accessibilityRole="button"
-                                            onPress={() =>
-                                                setWeightEditor({
-                                                    visible: true,
-                                                    entry: lastWeightPoint,
-                                                })
-                                            }
-                                            hitSlop={{ top: 8, bottom: 8 }}
-                                            style={[
-                                                styles.chipGhost,
-                                                {
-                                                    borderColor: theme.hairline,
-                                                },
-                                            ]}
-                                        >
-                                            <Text
-                                                style={[
-                                                    styles.chipText,
-                                                    {
-                                                        color: theme.inkSecondary,
-                                                    },
-                                                ]}
-                                            >
-                                                Править последнее
-                                            </Text>
-                                        </Pressable>
-                                    )}
-                                </View>
-                            )}
-                            {weightFootnote && (
-                                <Text
-                                    style={[
-                                        styles.footnote,
-                                        TabularNums,
-                                        { color: theme.inkMuted },
-                                    ]}
-                                >
-                                    {weightFootnote}
-                                </Text>
-                            )}
-                        </View>
-                    </FadeIn>
-
                     {/* Meals */}
-                    <FadeIn delay={360}>
+                    <FadeIn delay={240}>
                         <View style={styles.titleRow}>
                             <Text style={[styles.h2, { color: theme.ink }]}>
                                 Еда
@@ -1254,7 +1078,9 @@ export default function DashboardScreen() {
                                 <Pressable
                                     accessibilityRole="button"
                                     accessibilityLabel="Поиск по истории еды"
-                                    onPress={() => router.push(SEARCH_ROUTE)}
+                                    onPress={() =>
+                                        router.push(withDate("/search"))
+                                    }
                                     hitSlop={8}
                                 >
                                     <Text
@@ -1266,27 +1092,25 @@ export default function DashboardScreen() {
                                         Поиск
                                     </Text>
                                 </Pressable>
-                                {isToday && (
-                                    <Pressable
-                                        accessibilityRole="button"
-                                        onPress={() =>
-                                            setMealEditor({
-                                                visible: true,
-                                                meal: null,
-                                            })
-                                        }
-                                        hitSlop={8}
+                                <Pressable
+                                    accessibilityRole="button"
+                                    onPress={openMealCreate}
+                                    hitSlop={8}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.headerAction,
+                                            { color: theme.accent },
+                                        ]}
                                     >
-                                        <Text
-                                            style={[
-                                                styles.headerAction,
-                                                { color: theme.accent },
-                                            ]}
-                                        >
-                                            + Добавить
-                                        </Text>
-                                    </Pressable>
-                                )}
+                                        {isToday
+                                            ? "+ Добавить"
+                                            : `+ Добавить · ${addContext(
+                                                  data.date,
+                                                  today,
+                                              )}`}
+                                    </Text>
+                                </Pressable>
                             </View>
                         </View>
                         <View
@@ -1317,12 +1141,7 @@ export default function DashboardScreen() {
                                         <View style={styles.chipRow}>
                                             <Pressable
                                                 accessibilityRole="button"
-                                                onPress={() =>
-                                                    setMealEditor({
-                                                        visible: true,
-                                                        meal: null,
-                                                    })
-                                                }
+                                                onPress={openMealCreate}
                                                 style={[
                                                     styles.chip,
                                                     {
@@ -1345,7 +1164,9 @@ export default function DashboardScreen() {
                                             <Pressable
                                                 accessibilityRole="button"
                                                 onPress={() =>
-                                                    router.push("/chat")
+                                                    router.push(
+                                                        withDate("/chat"),
+                                                    )
                                                 }
                                                 style={[
                                                     styles.chipGhost,
@@ -1454,9 +1275,7 @@ export default function DashboardScreen() {
                                 <Pressable
                                     key={meal.id}
                                     accessibilityRole="button"
-                                    onPress={() =>
-                                        setMealEditor({ visible: true, meal })
-                                    }
+                                    onPress={() => openMealView(meal)}
                                     style={[
                                         styles.mealRow,
                                         i > 0 && {
@@ -1531,7 +1350,7 @@ export default function DashboardScreen() {
                                     )}
                                     <Pressable
                                         accessibilityRole="button"
-                                        accessibilityLabel="Повторить приём сегодня"
+                                        accessibilityLabel="Повторить приём в этот день"
                                         onPress={() => void repeatMeal(meal)}
                                         hitSlop={10}
                                         style={styles.repeatBtn}
@@ -1549,6 +1368,280 @@ export default function DashboardScreen() {
                             ))}
                         </View>
                     </FadeIn>
+
+                    {/* Water */}
+                    <FadeIn delay={300}>
+                        <View
+                            style={[
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
+                            <View style={styles.cardHeader}>
+                                <Text
+                                    style={[
+                                        styles.cardLabel,
+                                        { color: theme.inkSecondary },
+                                    ]}
+                                >
+                                    ВОДА
+                                </Text>
+                                <Text
+                                    style={[
+                                        styles.cardValue,
+                                        TabularNums,
+                                        { color: theme.ink },
+                                    ]}
+                                >
+                                    {(
+                                        data.water.total_ml / 1000
+                                    ).toLocaleString("ru-RU", {
+                                        minimumFractionDigits: 1,
+                                        maximumFractionDigits: 1,
+                                    })}
+                                    {data.water.goal_ml != null &&
+                                        ` / ${(
+                                            data.water.goal_ml / 1000
+                                        ).toLocaleString("ru-RU", {
+                                            minimumFractionDigits: 1,
+                                            maximumFractionDigits: 1,
+                                        })}`}{" "}
+                                    л
+                                </Text>
+                            </View>
+                            <WaterBars
+                                byHour={data.water.by_hour}
+                                color={theme.water}
+                                theme={theme}
+                                width={contentW}
+                            />
+                            <View style={styles.chipRow}>
+                                {WATER_PRESETS.map((ml) => (
+                                    <Pressable
+                                        key={ml}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Добавить ${ml} мл воды`}
+                                        disabled={waterBusy}
+                                        onPress={() => void drinkWater(ml)}
+                                        hitSlop={{ top: 8, bottom: 8 }}
+                                        style={({ pressed }) => [
+                                            styles.chip,
+                                            {
+                                                backgroundColor:
+                                                    theme.accentSoft,
+                                                opacity: waterBusy ? 0.5 : 1,
+                                                transform: [
+                                                    {
+                                                        scale: pressed
+                                                            ? 0.96
+                                                            : 1,
+                                                    },
+                                                ],
+                                            },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.chipText,
+                                                { color: theme.water },
+                                            ]}
+                                        >
+                                            +{ml} мл
+                                        </Text>
+                                    </Pressable>
+                                ))}
+                            </View>
+                            {data.water.entries.length > 0 && (
+                                <View style={styles.waterEntries}>
+                                    {data.water.entries.map((e) => (
+                                        <View
+                                            key={e.id}
+                                            style={[
+                                                styles.waterEntry,
+                                                { borderColor: theme.hairline },
+                                            ]}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.chipText,
+                                                    TabularNums,
+                                                    {
+                                                        color: theme.inkSecondary,
+                                                    },
+                                                ]}
+                                            >
+                                                {e.amount_ml} мл ·{" "}
+                                                {formatTime(e.logged_at)}
+                                            </Text>
+                                            <Pressable
+                                                accessibilityRole="button"
+                                                accessibilityLabel={`Удалить ${e.amount_ml} мл (${formatTime(e.logged_at)})`}
+                                                onPress={() =>
+                                                    confirmDelete(
+                                                        `Удалить ${e.amount_ml} мл?`,
+                                                        () =>
+                                                            void deleteWater(
+                                                                e.id,
+                                                            ),
+                                                    )
+                                                }
+                                                hitSlop={10}
+                                                style={styles.waterDel}
+                                            >
+                                                <Text
+                                                    style={[
+                                                        styles.waterDelText,
+                                                        {
+                                                            color: theme.inkMuted,
+                                                        },
+                                                    ]}
+                                                >
+                                                    ×
+                                                </Text>
+                                            </Pressable>
+                                        </View>
+                                    ))}
+                                </View>
+                            )}
+                            {waterNote && (
+                                <Text
+                                    style={[
+                                        styles.footnote,
+                                        { color: theme.danger },
+                                    ]}
+                                >
+                                    {waterNote}
+                                </Text>
+                            )}
+                            {data.water.entries.length === 0 && (
+                                <Text
+                                    style={[
+                                        styles.footnote,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    {isToday
+                                        ? "Ни капли за день — начни со стакана."
+                                        : "В этот день воды не было."}
+                                </Text>
+                            )}
+                            {data.water.goal_ml != null &&
+                                data.water.entries.length > 0 && (
+                                    <Text
+                                        style={[
+                                            styles.footnote,
+                                            { color: theme.inkMuted },
+                                        ]}
+                                    >
+                                        {Math.round(waterPct * 100)}% дневной
+                                        цели
+                                    </Text>
+                                )}
+                        </View>
+                    </FadeIn>
+
+                    {/* Weight */}
+                    <FadeIn delay={360}>
+                        <View
+                            style={[
+                                styles.block,
+                                { backgroundColor: theme.surfaceElevated },
+                            ]}
+                        >
+                            <View style={styles.cardHeader}>
+                                <Text
+                                    style={[
+                                        styles.cardLabel,
+                                        { color: theme.inkSecondary },
+                                    ]}
+                                >
+                                    ВЕС · 30 ДНЕЙ
+                                </Text>
+                                {data.weight.current_g != null && (
+                                    <Text
+                                        style={[
+                                            styles.cardValue,
+                                            TabularNums,
+                                            { color: theme.ink },
+                                        ]}
+                                    >
+                                        {kgText(data.weight.current_g)} кг
+                                    </Text>
+                                )}
+                            </View>
+                            {data.weight.series.length >= 2 ? (
+                                <WeightSparkline
+                                    series={data.weight.series}
+                                    targetG={data.weight.target_g}
+                                    color={theme.accent}
+                                    theme={theme}
+                                    width={contentW}
+                                />
+                            ) : (
+                                <Text
+                                    style={[
+                                        styles.footnote,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    Запиши вес дважды — появится тренд.
+                                </Text>
+                            )}
+                            <View style={styles.chipRow}>
+                                <Pressable
+                                    accessibilityRole="button"
+                                    onPress={openWeightCreate}
+                                    hitSlop={{ top: 8, bottom: 8 }}
+                                    style={[
+                                        styles.chip,
+                                        { backgroundColor: theme.accentSoft },
+                                    ]}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.chipText,
+                                            { color: theme.accent },
+                                        ]}
+                                    >
+                                        Записать вес
+                                    </Text>
+                                </Pressable>
+                                {dayWeight && (
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        onPress={() =>
+                                            openWeightEdit(dayWeight)
+                                        }
+                                        hitSlop={{ top: 8, bottom: 8 }}
+                                        style={[
+                                            styles.chipGhost,
+                                            { borderColor: theme.hairline },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.chipText,
+                                                { color: theme.inkSecondary },
+                                            ]}
+                                        >
+                                            Править вес дня
+                                        </Text>
+                                    </Pressable>
+                                )}
+                            </View>
+                            {weightFootnote && (
+                                <Text
+                                    style={[
+                                        styles.footnote,
+                                        TabularNums,
+                                        { color: theme.inkMuted },
+                                    ]}
+                                >
+                                    {weightFootnote}
+                                </Text>
+                            )}
+                        </View>
+                    </FadeIn>
                 </View>
             </ScrollView>
 
@@ -1556,7 +1649,7 @@ export default function DashboardScreen() {
             <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Открыть чат с ассистентом"
-                onPress={() => router.push("/chat")}
+                onPress={() => router.push(withDate("/chat"))}
                 style={({ pressed }) => [
                     styles.fab,
                     {
@@ -1572,14 +1665,25 @@ export default function DashboardScreen() {
             </Pressable>
 
             <MealEditor
+                // Ключ меняется на каждое открытие → редактор монтируется
+                // заново и режим просмотр/правка сбрасывается.
+                key={`meal-${mealEditor.defaultLoggedAt}-${mealEditor.meal?.id ?? "new"}`}
                 visible={mealEditor.visible}
                 meal={mealEditor.meal}
+                defaultLoggedAt={mealEditor.defaultLoggedAt}
+                backdated={mealEditor.backdated}
+                today={today}
+                onRepeat={repeatMeal}
                 onDone={editorDone}
                 onClose={closeEditors}
             />
             <WeightEditor
+                key={`weight-${weightEditor.defaultLoggedAt}-${weightEditor.entry?.id ?? "new"}`}
                 visible={weightEditor.visible}
                 entry={weightEditor.entry}
+                defaultLoggedAt={weightEditor.defaultLoggedAt}
+                backdated={weightEditor.backdated}
+                lastKg={lastKg}
                 onDone={editorDone}
                 onClose={closeEditors}
             />
@@ -1697,6 +1801,13 @@ const styles = StyleSheet.create({
         marginTop: Spacing.sm,
     },
     backTodayText: { fontFamily: Fonts.sansSemiBold, fontSize: 13 },
+    // Акцентная полоска под заголовком — мгновенный сигнал «не сегодня»
+    dayStrip: {
+        width: 44,
+        height: 3,
+        borderRadius: 2,
+        marginTop: 2,
+    },
     titleRow: {
         flexDirection: "row",
         alignItems: "baseline",
@@ -1768,6 +1879,34 @@ const styles = StyleSheet.create({
     },
     chipText: { fontFamily: Fonts.sansMedium, fontSize: 13 },
     footnote: { fontFamily: Fonts.sans, fontSize: 12 },
+    // Записи воды: чип с текстом и явным крестиком удаления
+    waterEntries: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: Spacing.sm,
+    },
+    waterEntry: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: Spacing.xs,
+        borderWidth: 1,
+        borderRadius: Radii.pill,
+        paddingLeft: Spacing.md,
+        paddingRight: Spacing.sm,
+        paddingVertical: 6,
+    },
+    waterDel: {
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    waterDelText: {
+        fontFamily: Fonts.sansSemiBold,
+        fontSize: 16,
+        lineHeight: 18,
+    },
     mealsCard: { gap: 0 },
     emptyMeals: { gap: Spacing.md, paddingVertical: Spacing.sm },
     emptySpark: { alignItems: "center" },

@@ -448,6 +448,106 @@ test("executeTool threads a turn idempotency key into the write", async () => {
     expect(calls[0]!.values).toContain("turn-key-1");
 });
 
+test("chat log tools persist logged_at and keep idempotency keys", async () => {
+    const loggedAt = new Date(Date.now() - 60_000).toISOString();
+    const mealRow = {
+        id: "m1",
+        user_id: "u1",
+        logged_at: loggedAt,
+        meal_type: "lunch",
+        description: "Суп",
+        calories: 300,
+        protein_g: 10,
+        carbs_g: 20,
+        fat_g: 8,
+        nutrition_source: "estimate",
+        notes: null,
+        idempotency_key: "meal-key",
+    };
+    const weightRow = {
+        id: "kg1",
+        user_id: "u1",
+        weight_g: 78200,
+        logged_at: loggedAt,
+        notes: null,
+        created_at: loggedAt,
+        idempotency_key: "weight-key",
+    };
+    const calls = installFakeSql([
+        { rows: [mealRow] },
+        { rows: [{ ...waterRow, logged_at: loggedAt }] },
+        { rows: [weightRow] },
+    ]);
+
+    const mealResult = JSON.parse(
+        await executeTool(
+            "u1",
+            "log_meal",
+            {
+                description: "Суп",
+                meal_type: "lunch",
+                calories: 300,
+                logged_at: loggedAt,
+            },
+            "meal-key",
+        ),
+    );
+    const waterResult = JSON.parse(
+        await executeTool(
+            "u1",
+            "log_water",
+            { amount_ml: 300, logged_at: loggedAt },
+            "water-key",
+        ),
+    );
+    const weightResult = JSON.parse(
+        await executeTool(
+            "u1",
+            "log_weight",
+            { weight_kg: 78.2, logged_at: loggedAt },
+            "weight-key",
+        ),
+    );
+
+    expect([
+        mealResult.logged,
+        waterResult.logged,
+        weightResult.logged,
+    ]).toEqual([true, true, true]);
+    expect(calls.every((call) => call.values.includes(loggedAt))).toBe(true);
+    expect(calls[0]!.values).toContain("meal-key");
+    expect(calls[1]!.values).toContain("water-key");
+    expect(calls[2]!.values).toContain("weight-key");
+});
+
+test("chat log tools reject future and too-old logged_at before writing", async () => {
+    installFakeSql([]);
+    const cases = [
+        ["log_meal", { description: "Суп", meal_type: "lunch" }],
+        ["log_water", { amount_ml: 300 }],
+        ["log_weight", { weight_kg: 78.2 }],
+    ] as const;
+    const invalid = [
+        [new Date(Date.now() + 3 * 60_000).toISOString(), "future"],
+        [
+            new Date(Date.now() - 366 * 24 * 60 * 60_000).toISOString(),
+            "older than one year",
+        ],
+    ] as const;
+
+    for (const [loggedAt, message] of invalid) {
+        for (const [name, args] of cases) {
+            const result = JSON.parse(
+                await executeTool("u1", name, {
+                    ...args,
+                    logged_at: loggedAt,
+                }),
+            );
+            expect(result.error).toContain(message);
+        }
+    }
+});
+
 test("executeTool set_goals patches goals atomically", async () => {
     const goalsRow = {
         user_id: "u1",
@@ -544,6 +644,7 @@ test("runChatTurn falls back to a canned reply when the LLM dies after a logged 
 });
 
 test("propose_meal returns a card and writes nothing to the database", async () => {
+    const loggedAt = new Date(Date.now() - 60_000).toISOString();
     // Only the timezone lookup is scripted: any insert would hit "unexpected".
     installFakeSql([{ rows: [] }]);
     fakeLlm([
@@ -555,8 +656,13 @@ test("propose_meal returns a card and writes nothing to the database", async () 
                     id: "c1",
                     function: {
                         name: "propose_meal",
-                        arguments:
-                            '{"description":"Овсянка с бананом","meal_type":"breakfast","calories":320,"protein_g":9}',
+                        arguments: JSON.stringify({
+                            description: "Овсянка с бананом",
+                            meal_type: "breakfast",
+                            calories: 320,
+                            protein_g: 9,
+                            logged_at: loggedAt,
+                        }),
                     },
                 },
             ],
@@ -573,12 +679,83 @@ test("propose_meal returns a card and writes nothing to the database", async () 
         {
             description: "Овсянка с бананом",
             meal_type: "breakfast",
+            logged_at: loggedAt,
             calories: 320,
             protein_g: 9,
             nutrition_source: "estimate",
         },
     ]);
     expect(reply.message).toContain("карточку");
+});
+
+test("propose_meal rejects a too-old logged_at and exposes no card", async () => {
+    installFakeSql([{ rows: [] }]);
+    const old = new Date(Date.now() - 366 * 24 * 60 * 60_000).toISOString();
+    const bodies = fakeLlm([
+        {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+                {
+                    id: "c1",
+                    function: {
+                        name: "propose_meal",
+                        arguments: JSON.stringify({
+                            description: "Суп",
+                            meal_type: "lunch",
+                            logged_at: old,
+                        }),
+                    },
+                },
+            ],
+        },
+        { role: "assistant", content: "Дата записи слишком старая." },
+    ]);
+
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "запиши старую еду" }],
+        "test-key",
+    );
+    const second = bodies[1] as {
+        messages: { role: string; content: string }[];
+    };
+    expect(reply.proposals).toEqual([]);
+    expect(second.messages.at(-1)?.content).toContain("older than one year");
+});
+
+test("chat schemas and prompt require logged_at for user-specified time", async () => {
+    installFakeSql([{ rows: [] }]);
+    const bodies = fakeLlm([{ role: "assistant", content: "Хорошо." }]);
+
+    await runChatTurn(
+        "u1",
+        [{ role: "user", content: "вчера утром" }],
+        "test-key",
+    );
+    const first = bodies[0] as {
+        messages: { role: string; content: string }[];
+        tools: {
+            function: {
+                name: string;
+                parameters: { properties: Record<string, unknown> };
+            };
+        }[];
+    };
+    const timedTools = first.tools.filter((tool) =>
+        ["propose_meal", "log_meal", "log_water", "log_weight"].includes(
+            tool.function.name,
+        ),
+    );
+    expect(timedTools).toHaveLength(4);
+    expect(
+        timedTools.every((tool) =>
+            Object.hasOwn(tool.function.parameters.properties, "logged_at"),
+        ),
+    ).toBe(true);
+    expect(first.messages[0]!.content).toContain("вчера");
+    expect(first.messages[0]!.content).toContain("MUST pass logged_at");
+    expect(first.messages[0]!.content).toContain("Mention the target day");
 });
 
 test("prose claiming a proposal without a tool call gets nudged into propose_meal", async () => {
