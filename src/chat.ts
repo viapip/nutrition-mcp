@@ -603,8 +603,14 @@ export async function executeTool(
 interface LlmMessage {
     role: string;
     content: string | null;
+    // K3 (thinking всегда включён) требует это поле в assistant-сообщениях
+    // с tool_calls при реплее истории — иначе 400.
+    reasoning_content?: string;
     tool_calls?: {
         id: string;
+        // Обязателен по OpenAI-спеке; без него токенизатор K3 отдаёт 400
+        // "tokenization failed" при реплее истории.
+        type: "function";
         function: { name: string; arguments: string };
     }[];
 }
@@ -670,9 +676,14 @@ async function callLlm(
     const decoder = new TextDecoder();
     const toolCalls = new Map<
         number,
-        { id: string; function: { name: string; arguments: string } }
+        {
+            id: string;
+            type: "function";
+            function: { name: string; arguments: string };
+        }
     >();
     let content = "";
+    let reasoning = "";
     let usage: LlmUsage | undefined;
     let buffer = "";
 
@@ -684,6 +695,7 @@ async function callLlm(
             choices?: {
                 delta?: {
                     content?: string;
+                    reasoning_content?: string;
                     tool_calls?: {
                         index: number;
                         id?: string;
@@ -695,6 +707,8 @@ async function callLlm(
         };
         if (event.usage) usage = event.usage;
         const delta = event.choices?.[0]?.delta;
+        // Thinking не стримим клиенту — только сохраняем для реплея истории.
+        if (delta?.reasoning_content) reasoning += delta.reasoning_content;
         if (delta?.content) {
             content += delta.content;
             await onDelta?.(delta.content);
@@ -702,6 +716,7 @@ async function callLlm(
         for (const chunk of delta?.tool_calls ?? []) {
             const call = toolCalls.get(chunk.index) ?? {
                 id: "",
+                type: "function" as const,
                 function: { name: "", arguments: "" },
             };
             if (chunk.id) call.id += chunk.id;
@@ -724,7 +739,14 @@ async function callLlm(
 
     const assembled = [...toolCalls.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([, call]) => call);
+        // Пустые arguments тоже валят токенизатор — всегда валидный JSON.
+        .map(([, call]) => ({
+            ...call,
+            function: {
+                name: call.function.name,
+                arguments: call.function.arguments || "{}",
+            },
+        }));
     if (!content && assembled.length === 0) {
         throw new Error("LLM returned no message");
     }
@@ -732,6 +754,7 @@ async function callLlm(
         message: {
             role: "assistant",
             content: content || null,
+            reasoning_content: reasoning || undefined,
             tool_calls: assembled.length ? assembled : undefined,
         },
         usage,

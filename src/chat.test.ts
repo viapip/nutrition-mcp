@@ -315,6 +315,62 @@ test("runChatTurn assembles streamed tool chunks and forwards final deltas", asy
     expect((bodies[0] as { stream: boolean }).stream).toBe(true);
 });
 
+test("runChatTurn replays reasoning_content on tool-call messages (K3)", async () => {
+    installFakeSql([{ rows: [] }]);
+    const bodies = fakeLlmStreams([
+        [
+            { choices: [{ delta: { reasoning_content: "think " } }] },
+            { choices: [{ delta: { reasoning_content: "hard" } }] },
+            {
+                choices: [
+                    {
+                        delta: {
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    id: "c1",
+                                    function: {
+                                        name: "propose_meal",
+                                        arguments:
+                                            '{"description":"суп","meal_type":"lunch"}',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+        [{ choices: [{ delta: { content: "Карточка готова." } }] }],
+    ]);
+    const deltas: string[] = [];
+    const reply = await runChatTurn(
+        "u1",
+        [{ role: "user", content: "я съел суп" }],
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        (text) => deltas.push(text),
+    );
+
+    expect(reply.message).toBe("Карточка готова.");
+    // Thinking не утекает в клиентский стрим
+    expect(deltas).toEqual(["Карточка готова."]);
+    const second = bodies[1] as {
+        messages: {
+            role: string;
+            reasoning_content?: string;
+            tool_calls?: { type?: string; function?: { arguments?: string } }[];
+        }[];
+    };
+    const assistant = second.messages.find(
+        (m) => m.role === "assistant" && m.tool_calls,
+    );
+    expect(assistant?.reasoning_content).toBe("think hard");
+    expect(assistant?.tool_calls?.[0]?.type).toBe("function");
+});
+
 test("invalid non-object tool arguments become a tool error", async () => {
     installFakeSql([{ rows: [] }]);
     const bodies = fakeLlm([
