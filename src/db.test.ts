@@ -434,7 +434,25 @@ test("insertWater persists a client-supplied logged_at", async () => {
 test("searchMeals treats SQL wildcard characters literally", async () => {
     const calls = installFakeSql([{ rows: [] }]);
     expect(await searchMeals("user-1", "100%_real")).toEqual([]);
-    expect(calls[0]!.values).toContain("%100\\%\\_real%");
+    expect(
+        calls[0]!.values.filter((value) => value === "%100\\%\\_real%"),
+    ).toHaveLength(2);
+});
+
+test("searchMeals combines Russian FTS with literal matching and ranks before recency", async () => {
+    const calls = installFakeSql([{ rows: [] }]);
+    await searchMeals("user-1", "булка мак", 8);
+
+    const text = calls[0]!.text.toLowerCase();
+    expect(text).toContain("plainto_tsquery('russian'");
+    expect(text).toContain("to_tsvector('russian', description)");
+    expect(text).toContain("or description ilike");
+    expect(text).toContain(
+        "order by exact_match desc, literal_match desc, relevance desc",
+    );
+    expect(text.indexOf("relevance desc")).toBeLessThan(
+        text.indexOf("logged_at desc"),
+    );
 });
 
 // ---------- Dishes catalog ----------

@@ -213,13 +213,62 @@ function formatMeal(meal: Meal): string {
     return parts.filter(Boolean).join("\n");
 }
 
+export function formatMealSearchResults(meals: Meal[], limit: number): string {
+    if (meals.length === 0) {
+        return [
+            "No meal history matches.",
+            "Next: retry search_meals once with fewer food words or a likely synonym. If there is still no match, ask for a barcode/photo or estimate. Do not ask the user for the date or time of a previous meal.",
+        ].join("\n\n");
+    }
+
+    const grouped = new Map<string, { meal: Meal; occurrences: number }>();
+    for (const meal of meals) {
+        const key = JSON.stringify([
+            meal.description.trim().toLowerCase(),
+            meal.calories,
+            meal.protein_g,
+            meal.carbs_g,
+            meal.fat_g,
+        ]);
+        const existing = grouped.get(key);
+        if (existing) {
+            existing.occurrences += 1;
+            if (meal.logged_at > existing.meal.logged_at) existing.meal = meal;
+        } else {
+            grouped.set(key, { meal, occurrences: 1 });
+        }
+    }
+
+    const candidates = [...grouped.values()].slice(0, limit);
+    const sections = candidates.map(({ meal, occurrences }, index) => {
+        const lines = [
+            `Candidate ${index + 1} (occurrences: ${occurrences})`,
+            `Description: ${meal.description}`,
+            `Last logged: ${meal.logged_at}`,
+            meal.meal_type ? `Type: ${meal.meal_type}` : null,
+            `Calories: ${meal.calories ?? "not recorded"}`,
+            `Protein: ${meal.protein_g != null ? `${meal.protein_g}g` : "not recorded"}`,
+            `Carbs: ${meal.carbs_g != null ? `${meal.carbs_g}g` : "not recorded"}`,
+            `Fat: ${meal.fat_g != null ? `${meal.fat_g}g` : "not recorded"}`,
+            `Nutrition source: ${meal.nutrition_source ?? "unknown"}`,
+            meal.notes ? `Notes: ${meal.notes}` : null,
+        ];
+        return lines.filter(Boolean).join("\n");
+    });
+
+    return [
+        sections.join("\n\n"),
+        "Next: if one candidate is clearly the same product and portion, call log_meal with its nutrition values and nutrition source; do not ask for another photo or barcode. If the portion differs, ask for the amount and scale the values. If multiple candidates are plausible, ask which one; do not guess.",
+    ].join("\n\n");
+}
+
 function registerTools(server: McpServer, userId: string) {
     server.registerTool(
         "log_meal",
         {
             title: "Log Meal",
             description:
-                "Log a meal entry with nutritional information. If the user doesn't specify the quantity or portion size, ask how much they ate before estimating calories and macros. When the user gives a barcode — typed, or read from a photo of the package (transcribe the digits printed under the barcode) — call lookup_barcode first to get verified nutritional data, then scale it to the amount eaten. Fall back to web search or estimation only when no product is found. Use web search for branded products when no barcode is available.",
+                "Log a meal entry with nutritional information. If the user doesn't specify the quantity or portion size, ask how much they ate before estimating calories and macros. Routing: when the user provides barcode digits, call lookup_barcode first. Otherwise, when they refer to something eaten before (for example 'the same one', 'that bun', 'as usual', or 'again') or a familiar named product without nutrition values, call search_meals before asking for another photo/barcode or using web search or estimation. Only when meal history has no clear match should you use a package photo, web search, or estimation.",
             annotations: {
                 readOnlyHint: false,
                 destructiveHint: false,
@@ -562,9 +611,9 @@ function registerTools(server: McpServer, userId: string) {
     server.registerTool(
         "search_meals",
         {
-            title: "Search Meal History",
+            title: "Find Previously Eaten Food",
             description:
-                "Search meal descriptions across the user's history. Returns the newest matches first.",
+                "Search the user's entire meal history by food or product name; no date is required. Call this before asking for another photo, barcode, nutrition label, web search, or estimating whenever the user refers to something eaten before — for example 'the same one', 'that bun', 'as usual', 'again', or a familiar named product without nutrition values. Pass only identifying food/product words, not the whole user sentence or dates. Results are ranked by relevance. Reuse nutrition only when both the product and eaten portion match; otherwise ask a short clarification.",
             annotations: {
                 readOnlyHint: true,
                 destructiveHint: false,
@@ -572,7 +621,13 @@ function registerTools(server: McpServer, userId: string) {
                 openWorldHint: false,
             },
             inputSchema: {
-                query: z.string().min(1).max(200),
+                query: z
+                    .string()
+                    .min(1)
+                    .max(200)
+                    .describe(
+                        "Identifying food or product words extracted from the user's request, e.g. 'булка мак' for 'съел ту булку с маком'. Do not include verbs, pronouns, dates, or meal times.",
+                    ),
                 limit: z.coerce.number().int().min(1).max(100).optional(),
             },
         },
@@ -581,18 +636,18 @@ function registerTools(server: McpServer, userId: string) {
                 "search_meals",
                 async () => {
                     if (!query.trim()) throw new Error("query required");
-                    const meals = await searchMeals(
-                        userId,
-                        query.trim(),
-                        limit ?? 20,
-                    );
+                    const candidateLimit = limit ?? 8;
+                    // Group after a bounded broad fetch so repeats do not crowd
+                    // distinct candidates out of the MCP response.
+                    const meals = await searchMeals(userId, query.trim(), 100);
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: meals.length
-                                    ? meals.map(formatMeal).join("\n\n---\n\n")
-                                    : `No meals found matching "${query}".`,
+                                text: formatMealSearchResults(
+                                    meals,
+                                    candidateLimit,
+                                ),
                             },
                         ],
                     };

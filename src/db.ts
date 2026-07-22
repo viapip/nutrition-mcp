@@ -477,14 +477,29 @@ export async function searchMeals(
     const db = getSql();
     try {
         const literalQuery = query.replace(/[\\%_]/g, "\\$&");
+        const literalPattern = `%${literalQuery}%`;
         const rows = await db`
+            with search_params as (
+                select plainto_tsquery('russian', ${query}) as tsquery
+            )
             select id, user_id, logged_at, meal_type, description, calories,
                    protein_g, carbs_g, fat_g, nutrition_source, notes,
-                   idempotency_key
+                   idempotency_key,
+                   lower(trim(description)) = lower(trim(${query})) as exact_match,
+                   description ilike ${literalPattern} escape ${"\\"} as literal_match,
+                   ts_rank_cd(
+                       to_tsvector('russian', description),
+                       search_params.tsquery
+                   ) as relevance
             from meals
+            cross join search_params
             where user_id = ${userId}
-              and description ilike ${`%${literalQuery}%`} escape ${"\\"}
-            order by logged_at desc
+              and (
+                  to_tsvector('russian', description) @@ search_params.tsquery
+                  or description ilike ${literalPattern} escape ${"\\"}
+              )
+            order by exact_match desc, literal_match desc, relevance desc,
+                     logged_at desc
             limit ${Math.min(100, Math.max(1, Math.round(limit)))}`;
         return rows.map(mapMeal);
     } catch (err) {
