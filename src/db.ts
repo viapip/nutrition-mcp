@@ -1,6 +1,10 @@
 import { SQL } from "bun";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { zonedDayStartUtc, zonedNextDayStartUtc } from "./tz.js";
+import {
+    calendarWeekBounds,
+    zonedDayStartUtc,
+    zonedNextDayStartUtc,
+} from "./tz.js";
 import { decodeEscapeSequences } from "./normalize.js";
 import { isWeightUnit, type WeightUnit } from "./units.js";
 import { validateDateRange } from "./validate.js";
@@ -507,6 +511,172 @@ export async function searchMeals(
     }
 }
 
+// ---------- Personal products ----------
+
+export interface PersonalProduct {
+    id: string;
+    user_id: string;
+    name: string;
+    barcode: string | null;
+    calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    nutrition_source: NutritionSource;
+    last_eaten_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface PersonalProductInput {
+    name: string;
+    barcode?: string | null;
+    calories: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    nutrition_source: NutritionSource;
+}
+
+function mapPersonalProduct(row: Record<string, unknown>): PersonalProduct {
+    return {
+        id: row.id as string,
+        user_id: row.user_id as string,
+        name: row.name as string,
+        barcode: (row.barcode as string | null) ?? null,
+        calories: numOrNull(row.calories),
+        protein_g: numOrNull(row.protein_g),
+        carbs_g: numOrNull(row.carbs_g),
+        fat_g: numOrNull(row.fat_g),
+        nutrition_source: row.nutrition_source as NutritionSource,
+        last_eaten_at:
+            row.last_eaten_at == null ? null : iso(row.last_eaten_at),
+        created_at: iso(row.created_at),
+        updated_at: iso(row.updated_at),
+    };
+}
+
+export async function savePersonalProduct(
+    userId: string,
+    input: PersonalProductInput,
+): Promise<PersonalProduct> {
+    const db = getSql();
+    try {
+        // ponytail: case-folded name is the identity ceiling; add barcode
+        // collision merging only if real renamed-package duplicates appear.
+        const [row] = await db`
+            insert into personal_products (
+                user_id, name, barcode, calories, protein_g, carbs_g, fat_g,
+                nutrition_source
+            ) values (
+                ${userId}, ${decodeEscapeSequences(input.name.trim())},
+                ${input.barcode ?? null}, ${input.calories}, ${input.protein_g},
+                ${input.carbs_g}, ${input.fat_g}, ${input.nutrition_source}
+            )
+            on conflict (user_id, lower(name)) do update set
+                barcode = coalesce(excluded.barcode, personal_products.barcode),
+                calories = excluded.calories,
+                protein_g = excluded.protein_g,
+                carbs_g = excluded.carbs_g,
+                fat_g = excluded.fat_g,
+                nutrition_source = case
+                    when personal_products.nutrition_source = 'barcode'
+                      or excluded.nutrition_source = 'barcode'
+                    then 'barcode'
+                    else excluded.nutrition_source
+                end,
+                updated_at = now()
+            returning *`;
+        return mapPersonalProduct(row);
+    } catch (err) {
+        throw new Error(`Failed to save product: ${errMsg(err)}`);
+    }
+}
+
+export async function getPersonalProduct(
+    userId: string,
+    id: string,
+): Promise<PersonalProduct | null> {
+    const db = getSql();
+    try {
+        const [row] = await db`
+            select * from personal_products
+            where user_id = ${userId} and id = ${id}`;
+        return row ? mapPersonalProduct(row) : null;
+    } catch (err) {
+        throw new Error(`Failed to get product: ${errMsg(err)}`);
+    }
+}
+
+export async function getPersonalProductByBarcode(
+    userId: string,
+    barcode: string,
+): Promise<PersonalProduct | null> {
+    const db = getSql();
+    try {
+        const [row] = await db`
+            select * from personal_products
+            where user_id = ${userId} and barcode = ${barcode}
+            order by updated_at desc
+            limit 1`;
+        return row ? mapPersonalProduct(row) : null;
+    } catch (err) {
+        throw new Error(`Failed to get product: ${errMsg(err)}`);
+    }
+}
+
+export async function searchPersonalProducts(
+    userId: string,
+    query: string,
+    limit: number = 8,
+): Promise<PersonalProduct[]> {
+    const db = getSql();
+    try {
+        const literalQuery = query.replace(/[\\%_]/g, "\\$&");
+        const literalPattern = `%${literalQuery}%`;
+        const rows = await db`
+            with search_params as (
+                select plainto_tsquery('russian', ${query}) as tsquery
+            )
+            select personal_products.*,
+                   lower(trim(name)) = lower(trim(${query})) as exact_match,
+                   name ilike ${literalPattern} escape ${"\\"} as literal_match,
+                   ts_rank_cd(
+                       to_tsvector('russian', name),
+                       search_params.tsquery
+                   ) as relevance
+            from personal_products
+            cross join search_params
+            where user_id = ${userId}
+              and (
+                  to_tsvector('russian', name) @@ search_params.tsquery
+                  or name ilike ${literalPattern} escape ${"\\"}
+              )
+            order by exact_match desc, literal_match desc, relevance desc,
+                     last_eaten_at desc nulls last, updated_at desc
+            limit ${Math.min(100, Math.max(1, Math.round(limit)))}`;
+        return rows.map(mapPersonalProduct);
+    } catch (err) {
+        throw new Error(`Failed to search products: ${errMsg(err)}`);
+    }
+}
+
+export async function markPersonalProductEaten(
+    userId: string,
+    id: string,
+    eatenAt: string,
+): Promise<void> {
+    const db = getSql();
+    try {
+        await db`
+            update personal_products
+            set last_eaten_at = ${eatenAt}, updated_at = now()
+            where user_id = ${userId} and id = ${id}`;
+    } catch (err) {
+        throw new Error(`Failed to update product: ${errMsg(err)}`);
+    }
+}
+
 export async function deleteMeal(userId: string, id: string): Promise<boolean> {
     const db = getSql();
     try {
@@ -962,6 +1132,182 @@ export async function getNutritionGoals(
         return row ? mapGoals(row) : null;
     } catch (err) {
         throw new Error(`Failed to get goals: ${errMsg(err)}`);
+    }
+}
+
+export interface CalorieBankSnapshot {
+    date: string;
+    week_start: string;
+    week_end: string;
+    daily_target: number;
+    day_calories: number;
+    day_delta: number;
+    weekly_budget: number;
+    week_calories: number;
+    weekly_remaining: number;
+}
+
+export async function getCalorieBankSnapshot(
+    userId: string,
+    date: string,
+    tz: string,
+): Promise<CalorieBankSnapshot | null> {
+    const { startDate, endDate } = calendarWeekBounds(date);
+    const weekStart = zonedDayStartUtc(startDate, tz);
+    const weekEnd = zonedNextDayStartUtc(endDate, tz);
+    const dayStart = zonedDayStartUtc(date, tz);
+    const dayEnd = zonedNextDayStartUtc(date, tz);
+    const db = getSql();
+    try {
+        const [row] = await db`
+            select goals.daily_calories,
+                   coalesce(sum(meals.calories) filter (
+                       where meals.logged_at >= ${dayStart.toISOString()}
+                         and meals.logged_at < ${dayEnd.toISOString()}
+                   ), 0) as day_calories,
+                   coalesce(sum(meals.calories), 0) as week_calories
+            from nutrition_goals goals
+            left join meals
+              on meals.user_id = goals.user_id
+             and meals.logged_at >= ${weekStart.toISOString()}
+             and meals.logged_at < ${weekEnd.toISOString()}
+            where goals.user_id = ${userId}
+            group by goals.daily_calories`;
+        const dailyTarget = numOrNull(row?.daily_calories);
+        if (dailyTarget == null || dailyTarget <= 0) return null;
+        const dayCalories = numOrNull(row.day_calories) ?? 0;
+        const weekCalories = numOrNull(row.week_calories) ?? 0;
+        const weeklyBudget = dailyTarget * 7;
+        return {
+            date,
+            week_start: startDate,
+            week_end: endDate,
+            daily_target: dailyTarget,
+            day_calories: dayCalories,
+            day_delta: dayCalories - dailyTarget,
+            weekly_budget: weeklyBudget,
+            week_calories: weekCalories,
+            weekly_remaining: weeklyBudget - weekCalories,
+        };
+    } catch (err) {
+        throw new Error(`Failed to get calorie bank: ${errMsg(err)}`);
+    }
+}
+
+export interface PeriodContributor {
+    description: string;
+    occurrences: number;
+    calories: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+    calorie_share_pct: number;
+    last_logged_at: string;
+}
+
+export async function getTopContributors(
+    userId: string,
+    startDate: string,
+    endDate: string,
+    tz: string,
+    limit: number = 10,
+): Promise<PeriodContributor[]> {
+    validateDateRange(startDate, endDate);
+    const startUtc = zonedDayStartUtc(startDate, tz);
+    const endUtc = zonedNextDayStartUtc(endDate, tz);
+    const db = getSql();
+    try {
+        // ponytail: exact descriptions are the grouping ceiling; normalize a
+        // separate product identity only if case/wording variants split ranks.
+        const rows = await db`
+            with contributors as (
+                select description,
+                       count(*)::integer as occurrences,
+                       coalesce(sum(calories), 0) as calories,
+                       coalesce(sum(protein_g), 0) as protein_g,
+                       coalesce(sum(carbs_g), 0) as carbs_g,
+                       coalesce(sum(fat_g), 0) as fat_g,
+                       max(logged_at) as last_logged_at
+                from meals
+                where user_id = ${userId}
+                  and logged_at >= ${startUtc.toISOString()}
+                  and logged_at < ${endUtc.toISOString()}
+                group by description
+            )
+            select *,
+                   case when sum(calories) over () > 0
+                        then round(calories * 100.0 / sum(calories) over (), 1)
+                        else 0 end as calorie_share_pct
+            from contributors
+            order by calories desc, occurrences desc, last_logged_at desc
+            limit ${Math.min(50, Math.max(1, Math.round(limit)))}`;
+        return rows.map((row: Record<string, unknown>) => ({
+            description: row.description as string,
+            occurrences: numOrNull(row.occurrences) ?? 0,
+            calories: numOrNull(row.calories) ?? 0,
+            protein_g: numOrNull(row.protein_g) ?? 0,
+            carbs_g: numOrNull(row.carbs_g) ?? 0,
+            fat_g: numOrNull(row.fat_g) ?? 0,
+            calorie_share_pct: numOrNull(row.calorie_share_pct) ?? 0,
+            last_logged_at: iso(row.last_logged_at),
+        }));
+    } catch (err) {
+        throw new Error(`Failed to get top contributors: ${errMsg(err)}`);
+    }
+}
+
+export interface DailyNutritionTotal {
+    date: string;
+    meal_count: number;
+    calories: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+}
+
+export async function getDailyNutritionTotals(
+    userId: string,
+    startDate: string,
+    endDate: string,
+    tz: string,
+): Promise<DailyNutritionTotal[]> {
+    validateDateRange(startDate, endDate);
+    const startUtc = zonedDayStartUtc(startDate, tz);
+    const endUtc = zonedNextDayStartUtc(endDate, tz);
+    const db = getSql();
+    try {
+        const rows = await db`
+            with days as (
+                select generate_series(
+                    ${startDate}::date,
+                    ${endDate}::date,
+                    interval '1 day'
+                )::date as day
+            )
+            select days.day,
+                   count(meals.id)::integer as meal_count,
+                   coalesce(sum(meals.calories), 0) as calories,
+                   coalesce(sum(meals.protein_g), 0) as protein_g,
+                   coalesce(sum(meals.carbs_g), 0) as carbs_g,
+                   coalesce(sum(meals.fat_g), 0) as fat_g
+            from days
+            left join meals
+              on meals.user_id = ${userId}
+             and meals.logged_at >= ${startUtc.toISOString()}
+             and meals.logged_at < ${endUtc.toISOString()}
+             and (meals.logged_at at time zone ${tz})::date = days.day
+            group by days.day
+            order by days.day`;
+        return rows.map((row: Record<string, unknown>) => ({
+            date: iso(row.day).slice(0, 10),
+            meal_count: numOrNull(row.meal_count) ?? 0,
+            calories: numOrNull(row.calories) ?? 0,
+            protein_g: numOrNull(row.protein_g) ?? 0,
+            carbs_g: numOrNull(row.carbs_g) ?? 0,
+            fat_g: numOrNull(row.fat_g) ?? 0,
+        }));
+    } catch (err) {
+        throw new Error(`Failed to get daily nutrition totals: ${errMsg(err)}`);
     }
 }
 

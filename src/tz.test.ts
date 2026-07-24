@@ -7,6 +7,7 @@ import {
     zonedDayStartUtc,
     zonedNextDayStartUtc,
     shiftLocalDate,
+    calendarWeekBounds,
 } from "./tz.js";
 
 test("dateInTz maps an instant to the local calendar day", () => {
@@ -61,6 +62,17 @@ test("zonedNextDayStartUtc is the exclusive upper bound", () => {
 test("shiftLocalDate does calendar arithmetic across month boundaries", () => {
     expect(shiftLocalDate("2024-02-28", 1)).toBe("2024-02-29"); // leap year
     expect(shiftLocalDate("2024-03-01", -1)).toBe("2024-02-29");
+});
+
+test("calendarWeekBounds is Monday–Sunday, including Sunday input", () => {
+    expect(calendarWeekBounds("2026-07-20")).toEqual({
+        startDate: "2026-07-20",
+        endDate: "2026-07-26",
+    });
+    expect(calendarWeekBounds("2026-07-26")).toEqual({
+        startDate: "2026-07-20",
+        endDate: "2026-07-26",
+    });
 });
 
 test("validateTz accepts IANA names and rejects junk", () => {

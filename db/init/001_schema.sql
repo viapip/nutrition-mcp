@@ -87,6 +87,37 @@ create unique index uniq_meals_user_idem on meals (user_id, idempotency_key)
 where
     idempotency_key is not null;
 
+-- Per-user product memory. Macros describe the named portion/basis stored in
+-- name (for example "Хлебцы Ого, 1 штука"). The global food_cache remains the
+-- shared external-lookup cache; this table is private user history.
+create table personal_products (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references users (id) on delete cascade,
+    name text not null,
+    barcode text,
+    calories integer,
+    protein_g numeric,
+    carbs_g numeric,
+    fat_g numeric,
+    nutrition_source text not null check (
+        nutrition_source in ('estimate', 'barcode', 'dish', 'manual')
+    ),
+    last_eaten_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint personal_products_nutrients_nonnegative check (
+        calories >= 0 and protein_g >= 0 and carbs_g >= 0 and fat_g >= 0
+    )
+);
+
+create unique index uniq_personal_products_user_lower_name
+on personal_products (user_id, lower(name));
+
+create index idx_personal_products_user_barcode
+on personal_products (user_id, barcode)
+where
+    barcode is not null;
+
 -- Personal catalog of recurring dishes (protein shake, home-baked buns, own
 -- recipes). Macros are per portion; meal_type is an optional hint. Used by the
 -- mobile meal editor as a quick-pick and by the chat assistant before it

@@ -24,44 +24,50 @@ On first connect you'll be asked to register with an email and password. Your da
 
 ## MCP Tools
 
-| Tool                       | Description                                                                                              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `log_meal`                 | Log a meal with description, type, calories, macros, notes                                               |
-| `lookup_barcode`           | Look up a packaged product's verified macros by barcode via Open Food Facts (read from a photo or typed) |
-| `get_meals_today`          | Get all meals logged today                                                                               |
-| `get_meals_by_date`        | Get meals for a specific date (YYYY-MM-DD)                                                               |
-| `get_meals_by_date_range`  | Get meals between two dates (inclusive)                                                                  |
-| `get_nutrition_summary`    | Daily nutrition totals + goal progress for a date range                                                  |
-| `update_meal`              | Update any fields of an existing meal                                                                    |
-| `delete_meal`              | Delete a meal by ID                                                                                      |
-| `set_nutrition_goals`      | Set daily calorie, macro, and water targets, plus an optional target weight                              |
-| `get_nutrition_goals`      | Get the current daily targets                                                                            |
-| `get_goal_progress`        | Get intake vs. targets for a given day (default: today), plus latest weight vs. target                   |
-| `log_water`                | Log a hydration entry in milliliters                                                                     |
-| `get_water_today`          | Get today's water intake total and entries                                                               |
-| `get_water_by_date`        | Get water intake for a specific date                                                                     |
-| `delete_water`             | Delete a water log entry by ID                                                                           |
-| `log_weight`               | Log a body-weight measurement in kg or lb (converted and stored server-side)                             |
-| `get_weight_today`         | Get today's weight entries                                                                               |
-| `get_weight_by_date`       | Get weight entries for a specific date                                                                   |
-| `get_weight_by_date_range` | Get weight entries between two dates (inclusive), grouped by day                                         |
-| `get_weight_trends`        | Weight trend: latest, overall change, 7/14/30-day moving averages, min/max, and goal progress            |
-| `update_weight`            | Update an existing weight entry                                                                          |
-| `delete_weight`            | Delete a weight entry by ID                                                                              |
-| `set_weight_unit`          | Set the preferred weight unit (`kg` or `lb`; null to clear)                                              |
-| `get_weight_unit`          | Get the preferred weight unit                                                                            |
-| `get_trends`               | 7/14/30-day averages, std dev, streaks, day-of-week, best/worst day                                      |
-| `get_meal_patterns`        | Pre-aggregated behavioural patterns (breakfast effect, late dinner, weekend vs weekday, outliers)        |
-| `export_meals`             | Export all meals as a CSV and return a 60-minute download link                                           |
-| `set_timezone`             | Set the user's IANA timezone (e.g. `America/Los_Angeles`)                                                |
-| `get_timezone`             | Get the user's configured timezone                                                                       |
-| `delete_account`           | Permanently delete account and all associated data                                                       |
+| Tool                       | Description                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------------------------- |
+| `log_meal`                 | Log a meal with description, type, calories, macros, notes                                          |
+| `remember_product`         | Save structured package nutrition to the user's private product memory                              |
+| `search_products`          | Find a personal product by description, with macros, source, and last-eaten time                    |
+| `log_saved_product`        | Log a saved product while retaining its stored nutrition source                                     |
+| `lookup_barcode`           | Resolve a barcode from personal memory first, then Open Food Facts, and remember successful results |
+| `get_meals_today`          | Get all meals logged today                                                                          |
+| `get_meals_by_date`        | Get meals for a specific date (YYYY-MM-DD)                                                          |
+| `get_meals_by_date_range`  | Get meals between two dates (inclusive)                                                             |
+| `get_nutrition_summary`    | Daily nutrition totals + goal progress for a date range                                             |
+| `update_meal`              | Update any fields of an existing meal                                                               |
+| `delete_meal`              | Delete a meal by ID                                                                                 |
+| `set_nutrition_goals`      | Set daily calorie, macro, and water targets, plus an optional target weight                         |
+| `get_nutrition_goals`      | Get the current daily targets                                                                       |
+| `get_calorie_bank`         | Get a day's calorie delta and its Monday–Sunday bank balance                                        |
+| `get_goal_progress`        | Get intake vs. targets for a given day (default: today), plus latest weight vs. target              |
+| `get_top_contributors`     | Rank foods/meals by calorie and macro contribution for a date window                                |
+| `get_weekly_summary`       | Get calendar-week daily macros, calorie bank, and top contributors in one call                      |
+| `log_water`                | Log a hydration entry in milliliters                                                                |
+| `get_water_today`          | Get today's water intake total and entries                                                          |
+| `get_water_by_date`        | Get water intake for a specific date                                                                |
+| `delete_water`             | Delete a water log entry by ID                                                                      |
+| `log_weight`               | Log a body-weight measurement in kg or lb (converted and stored server-side)                        |
+| `get_weight_today`         | Get today's weight entries                                                                          |
+| `get_weight_by_date`       | Get weight entries for a specific date                                                              |
+| `get_weight_by_date_range` | Get weight entries between two dates (inclusive), grouped by day                                    |
+| `get_weight_trends`        | Weight trend: latest, overall change, 7/14/30-day moving averages, min/max, and goal progress       |
+| `update_weight`            | Update an existing weight entry                                                                     |
+| `delete_weight`            | Delete a weight entry by ID                                                                         |
+| `set_weight_unit`          | Set the preferred weight unit (`kg` or `lb`; null to clear)                                         |
+| `get_weight_unit`          | Get the preferred weight unit                                                                       |
+| `get_trends`               | 7/14/30-day averages, std dev, streaks, day-of-week, best/worst day                                 |
+| `get_meal_patterns`        | Pre-aggregated behavioural patterns (breakfast effect, late dinner, weekend vs weekday, outliers)   |
+| `export_meals`             | Export all meals as a CSV and return a 60-minute download link                                      |
+| `set_timezone`             | Set the user's IANA timezone (e.g. `America/Los_Angeles`)                                           |
+| `get_timezone`             | Get the user's configured timezone                                                                  |
+| `delete_account`           | Permanently delete account and all associated data                                                  |
 
 ## MCP Resources
 
-| URI                          | Description                                                                       |
-| ---------------------------- | --------------------------------------------------------------------------------- |
-| `nutrition://weekly-summary` | Rolling 7-day digest (averages vs targets, best/roughest day) for proactive pulls |
+| URI                          | Description                                                            |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `nutrition://weekly-summary` | Current Monday–Sunday daily macros, calorie bank, and top contributors |
 
 ## Self-hosting
 

@@ -9,6 +9,12 @@ import {
     insertMeal,
     insertWater,
     searchMeals,
+    savePersonalProduct,
+    searchPersonalProducts,
+    getPersonalProductByBarcode,
+    getCalorieBankSnapshot,
+    getTopContributors,
+    getDailyNutritionTotals,
     listDishes,
     insertDish,
     updateDish,
@@ -453,6 +459,165 @@ test("searchMeals combines Russian FTS with literal matching and ranks before re
     expect(text.indexOf("relevance desc")).toBeLessThan(
         text.indexOf("logged_at desc"),
     );
+});
+
+test("personal products upsert by name and search with Russian FTS before recency", async () => {
+    const row = {
+        id: "product-1",
+        user_id: "user-1",
+        name: "Хлебцы Ого, 1 штука",
+        barcode: "12345678",
+        calories: 27,
+        protein_g: "0.8",
+        carbs_g: "5.2",
+        fat_g: "0.3",
+        nutrition_source: "barcode",
+        last_eaten_at: new Date("2026-07-20T10:00:00.000Z"),
+        created_at: new Date("2026-07-01T10:00:00.000Z"),
+        updated_at: new Date("2026-07-20T10:00:00.000Z"),
+    };
+    const calls = installFakeSql([
+        { rows: [row] },
+        { rows: [row] },
+        { rows: [row] },
+    ]);
+
+    const saved = await savePersonalProduct("user-1", {
+        name: " Хлебцы Ого, 1 штука ",
+        barcode: "12345678",
+        calories: 27,
+        protein_g: 0.8,
+        carbs_g: 5.2,
+        fat_g: 0.3,
+        nutrition_source: "barcode",
+    });
+    const found = await searchPersonalProducts("user-1", "хлебцы ого");
+    const byBarcode = await getPersonalProductByBarcode("user-1", "12345678");
+
+    expect(saved.name).toBe("Хлебцы Ого, 1 штука");
+    expect(saved.protein_g).toBe(0.8);
+    expect(found[0]!.last_eaten_at).toBe("2026-07-20T10:00:00.000Z");
+    expect(byBarcode?.id).toBe("product-1");
+    expect(calls[0]!.text.toLowerCase()).toContain(
+        "on conflict (user_id, lower(name))",
+    );
+    expect(calls[0]!.text).toContain("nutrition_source = case");
+    expect(calls[1]!.text.toLowerCase()).toContain("plainto_tsquery('russian'");
+    expect(calls[1]!.text).toContain("last_eaten_at desc nulls last");
+    expect(calls[2]!.text).toContain("barcode =");
+});
+
+test("calorie bank uses local Monday–Sunday bounds and derives a seven-day budget", async () => {
+    const calls = installFakeSql([
+        {
+            rows: [
+                {
+                    daily_calories: 2000,
+                    day_calories: "2400",
+                    week_calories: "13100",
+                },
+            ],
+        },
+    ]);
+
+    const bank = await getCalorieBankSnapshot(
+        "user-1",
+        "2026-07-22",
+        "Europe/Moscow",
+    );
+    expect(bank).toEqual({
+        date: "2026-07-22",
+        week_start: "2026-07-20",
+        week_end: "2026-07-26",
+        daily_target: 2000,
+        day_calories: 2400,
+        day_delta: 400,
+        weekly_budget: 14000,
+        week_calories: 13100,
+        weekly_remaining: 900,
+    });
+    expect(calls[0]!.values).toContain("2026-07-19T21:00:00.000Z");
+    expect(calls[0]!.values).toContain("2026-07-26T21:00:00.000Z");
+    expect(calls[0]!.text.toLowerCase()).toContain("filter (");
+});
+
+test("top contributors are aggregated and ranked in SQL for the local date window", async () => {
+    const calls = installFakeSql([
+        {
+            rows: [
+                {
+                    description: "Хлебцы Ого",
+                    occurrences: 3,
+                    calories: "810",
+                    protein_g: "24",
+                    carbs_g: "144",
+                    fat_g: "30",
+                    calorie_share_pct: "42.6",
+                    last_logged_at: new Date("2026-07-22T20:00:00.000Z"),
+                },
+            ],
+        },
+    ]);
+    const result = await getTopContributors(
+        "user-1",
+        "2026-07-20",
+        "2026-07-26",
+        "Europe/Moscow",
+        5,
+    );
+
+    expect(result[0]!.calorie_share_pct).toBe(42.6);
+    expect(result[0]!.last_logged_at).toBe("2026-07-22T20:00:00.000Z");
+    expect(calls[0]!.text.toLowerCase()).toContain("group by description");
+    expect(calls[0]!.text.toLowerCase()).toContain(
+        "order by calories desc, occurrences desc",
+    );
+    expect(calls[0]!.values).toContain("2026-07-19T21:00:00.000Z");
+    expect(calls[0]!.values).toContain("2026-07-26T21:00:00.000Z");
+});
+
+test("weekly daily totals are filled and aggregated by local calendar date in SQL", async () => {
+    const calls = installFakeSql([
+        {
+            rows: [
+                {
+                    day: "2026-07-20",
+                    meal_count: 2,
+                    calories: "2050",
+                    protein_g: "110.5",
+                    carbs_g: "220",
+                    fat_g: "70",
+                },
+                {
+                    day: "2026-07-21",
+                    meal_count: 0,
+                    calories: "0",
+                    protein_g: "0",
+                    carbs_g: "0",
+                    fat_g: "0",
+                },
+            ],
+        },
+    ]);
+    const totals = await getDailyNutritionTotals(
+        "user-1",
+        "2026-07-20",
+        "2026-07-26",
+        "Europe/Moscow",
+    );
+
+    expect(totals[0]).toEqual({
+        date: "2026-07-20",
+        meal_count: 2,
+        calories: 2050,
+        protein_g: 110.5,
+        carbs_g: 220,
+        fat_g: 70,
+    });
+    expect(totals[1]!.meal_count).toBe(0);
+    expect(calls[0]!.text.toLowerCase()).toContain("generate_series");
+    expect(calls[0]!.text.toLowerCase()).toContain("logged_at at time zone");
+    expect(calls[0]!.text.toLowerCase()).toContain("group by days.day");
 });
 
 // ---------- Dishes catalog ----------

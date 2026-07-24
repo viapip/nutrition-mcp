@@ -67,6 +67,16 @@ export function dateInTz(instant: Date | string, tz: string): string {
     return dateFormatter(tz).format(d);
 }
 
+/** Monday–Sunday calendar week containing a local YYYY-MM-DD date. */
+export function calendarWeekBounds(date: string): {
+    startDate: string;
+    endDate: string;
+} {
+    const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+    const startDate = shiftLocalDate(date, day === 0 ? -6 : 1 - day);
+    return { startDate, endDate: shiftLocalDate(startDate, 6) };
+}
+
 /**
  * Local wall-clock timestamp ("YYYY-MM-DD HH:mm:ss") of an absolute instant in
  * the given IANA timezone. With tz="UTC" this yields the raw UTC time.
