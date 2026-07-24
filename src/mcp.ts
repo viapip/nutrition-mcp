@@ -449,7 +449,7 @@ function registerTools(server: McpServer, userId: string) {
                     .min(1)
                     .max(200)
                     .describe(
-                        "Product name including the nutrition basis or portion when relevant, e.g. 'Хлебцы Ого, 1 штука'.",
+                        "Product name including the nutrition basis, e.g. 'Хлебцы Ого, упаковка 70 г'. Prefer a whole-package basis: partial eating is then logged as a fractional quantity of it.",
                     ),
                 calories: z
                     .number()
@@ -591,7 +591,7 @@ function registerTools(server: McpServer, userId: string) {
                     .max(100)
                     .optional()
                     .describe(
-                        "Number of saved portions eaten; defaults to 1. Use an explicit amount from the user when provided.",
+                        "Number of saved portions eaten; defaults to 1. Can be fractional: 0.5 for half a package, 0.33 for a third. Use an explicit amount from the user when provided; do not round to whole portions.",
                     ),
                 meal_type: z
                     .enum(["breakfast", "lunch", "dinner", "snack"])
